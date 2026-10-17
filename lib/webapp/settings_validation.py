@@ -1,16 +1,21 @@
 """Validation of `POST /setsettings` payloads (pure, no I/O)."""
-import math
+from __future__ import annotations
 
+import math
+from collections.abc import Mapping
+from typing import Any
+
+from lib.webapp.protocols import SettingUpdate
 from lib.webapp.secret_keys import MASK, is_secret_key
 
-MAX_VALUE_LENGTH = 65536
+MAX_VALUE_LENGTH: int = 65536
 
 
 class SettingsError(ValueError):
     pass
 
 
-def _to_storable(value):
+def _to_storable(value: Any) -> str:
     """Scalar JSON value -> the string form the config database has always held."""
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -25,7 +30,7 @@ def _to_storable(value):
     raise SettingsError("value must be a string, number or boolean")
 
 
-def validate_settings(payload, modules):
+def validate_settings(payload: Any, modules: Mapping[str, Any]) -> list[SettingUpdate]:
     """Validate every pair before anything is written.
 
     `payload` is {"module:key": value}. `modules` is {name: plugin} where each
@@ -35,7 +40,8 @@ def validate_settings(payload, modules):
     """
     if not isinstance(payload, dict):
         raise SettingsError("body must be a JSON object")
-    updates, problems = [], []
+    updates: list[SettingUpdate] = []
+    problems: list[str] = []
     for name, value in payload.items():
         if not isinstance(name, str) or ":" not in name:
             problems.append("%r: expected module:key" % (name,))
@@ -54,7 +60,7 @@ def validate_settings(payload, modules):
         if is_secret_key(key) and value == MASK:
             continue
         try:
-            updates.append((module, key, _to_storable(value)))
+            updates.append(SettingUpdate(module, key, _to_storable(value)))
         except SettingsError as e:
             problems.append("%s: %s" % (name, e))
     if problems:

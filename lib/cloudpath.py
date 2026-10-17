@@ -4,14 +4,16 @@ The cloud sends lines such as  `GET /getstatus`.  Whatever it sends is built
 into a URL that points at the local web UI, so the path must not be able to
 change the authority (host/port) of that URL.
 """
+from __future__ import annotations
+
 import re
 from urllib.parse import unquote, urlsplit
 
-MAX_PATH_LENGTH = 2048
-_PRINTABLE_NO_SPACE = re.compile(r"^[\x21-\x7e]+$")
+MAX_PATH_LENGTH: int = 2048
+_PRINTABLE_NO_SPACE: re.Pattern[str] = re.compile(r"^[\x21-\x7e]+$")
 
 
-def validate_proxy_path(path):
+def validate_proxy_path(path: object) -> str:
     """Return `path` if it is safe to proxy, otherwise raise ValueError."""
     if not isinstance(path, str) or not path:
         raise ValueError("empty path")
@@ -36,7 +38,7 @@ def validate_proxy_path(path):
     return path
 
 
-def build_proxy_url(path, port):
+def build_proxy_url(path: object, port: int | str) -> str:
     """The only URL the cloud proxy may open: loopback, our port, a checked path."""
     validate_proxy_path(path)
     url = "http://127.0.0.1:%d%s" % (int(port), path)

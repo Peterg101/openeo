@@ -1,8 +1,11 @@
 """Safe resolution of request paths to files under the static directory."""
+from __future__ import annotations
+
 import os
+from typing import Any
 
 # extension -> content type; anything else is never served
-CONTENT_TYPES = {
+CONTENT_TYPES: dict[str, str] = {
     ".html": "text/html; charset=utf-8",
     ".ico": "image/x-icon",
     ".png": "image/png",
@@ -11,10 +14,10 @@ CONTENT_TYPES = {
     ".css": "text/css; charset=utf-8",
 }
 
-DEFAULT_PAGE = "static/index.html"
+DEFAULT_PAGE: str = "static/index.html"
 
 
-def resolve_static(root, request_path):
+def resolve_static(root: str, request_path: Any) -> tuple[str, str] | None:
     """Map a URL path onto a file strictly inside `root`.
 
     Returns (absolute path, content type) or None. The path is resolved (so

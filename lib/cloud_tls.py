@@ -10,19 +10,21 @@ the SHA-256 fingerprint of the certificate the server presented with the pin.
 If the cloud operator rotates the certificate, connections fail closed until
 the new certificate is committed here.
 """
+from __future__ import annotations
+
 import hashlib
 import hmac
 import os
 import ssl
 
-PINNED_CERT_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+PINNED_CERT_FILE: str = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "cloud_certs", "ssl.openeo.uk.pem")
 
 # SHA-256 of the DER encoding of the certificate in PINNED_CERT_FILE
-PINNED_SHA256 = "69a81fad0a5e309a8ca9897ff0f540885e497a7cfa3e16e864722d6cb1049823"
+PINNED_SHA256: str = "69a81fad0a5e309a8ca9897ff0f540885e497a7cfa3e16e864722d6cb1049823"
 
 
-def make_ssl_context(cert_file=PINNED_CERT_FILE):
+def make_ssl_context(cert_file: str = PINNED_CERT_FILE) -> ssl.SSLContext:
     """Client context that trusts only the pinned certificate."""
     # Deliberately not ssl.create_default_context(): that would load the system
     # CA store (we do not want any other CA to be able to vouch for the cloud).
@@ -36,11 +38,11 @@ def make_ssl_context(cert_file=PINNED_CERT_FILE):
     return ctx
 
 
-def fingerprint_sha256(der_bytes):
+def fingerprint_sha256(der_bytes: bytes) -> str:
     return hashlib.sha256(der_bytes).hexdigest()
 
 
-def verify_pinned_peer(der_bytes, pinned=PINNED_SHA256):
+def verify_pinned_peer(der_bytes: bytes | None, pinned: str = PINNED_SHA256) -> None:
     """Raise ssl.SSLError unless the peer certificate is exactly the pinned one."""
     if not der_bytes or not hmac.compare_digest(fingerprint_sha256(der_bytes), pinned):
         raise ssl.SSLError("OpenEO Cloud certificate does not match the pinned certificate")

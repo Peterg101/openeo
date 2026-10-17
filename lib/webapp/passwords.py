@@ -5,28 +5,30 @@ Stored format:  scrypt$<N>$<r>$<p>$<salt b64>$<hash b64>
 Only the standard library is used so that the root first-boot step can import
 this module without any third-party packages.
 """
+from __future__ import annotations
+
 import base64
 import hashlib
 import hmac
 import os
 
-SCRYPT_N = 2 ** 14
-SCRYPT_R = 8
-SCRYPT_P = 1
-DKLEN = 32
-SALT_BYTES = 16
+SCRYPT_N: int = 2 ** 14
+SCRYPT_R: int = 8
+SCRYPT_P: int = 1
+DKLEN: int = 32
+SALT_BYTES: int = 16
 
 # Bounds applied when *verifying*, so a tampered store cannot make the Pi burn
 # unbounded memory/CPU.
-_MAX_N = 2 ** 16
-_MAX_R = 16
-_MAX_P = 4
+_MAX_N: int = 2 ** 16
+_MAX_R: int = 16
+_MAX_P: int = 4
 
-MIN_PASSWORD_LENGTH = 8
-MAX_PASSWORD_LENGTH = 128
+MIN_PASSWORD_LENGTH: int = 8
+MAX_PASSWORD_LENGTH: int = 128
 
 
-def password_policy_error(password):
+def password_policy_error(password: object) -> str | None:
     """Return a human-readable problem with `password`, or None if acceptable."""
     if not isinstance(password, str):
         return "Password must be text"
@@ -39,11 +41,12 @@ def password_policy_error(password):
     return None
 
 
-def _b64(raw):
+def _b64(raw: bytes) -> str:
     return base64.b64encode(raw).decode("ascii")
 
 
-def hash_password(password, salt=None, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P):
+def hash_password(password: str, salt: bytes | None = None, n: int = SCRYPT_N,
+                  r: int = SCRYPT_R, p: int = SCRYPT_P) -> str:
     """Hash `password` with a fresh random salt (a salt can be injected for tests)."""
     if salt is None:
         salt = os.urandom(SALT_BYTES)
@@ -52,14 +55,16 @@ def hash_password(password, salt=None, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P):
     return "scrypt$%d$%d$%d$%s$%s" % (n, r, p, _b64(salt), _b64(digest))
 
 
-def _parse(stored):
+def _parse(stored: object) -> tuple[int, int, int, bytes, bytes] | None:
+    if not isinstance(stored, str):
+        return None
     try:
-        scheme, n, r, p, salt, digest = stored.split("$")
+        scheme, n_text, r_text, p_text, salt_text, digest_text = stored.split("$")
         if scheme != "scrypt":
             return None
-        n, r, p = int(n), int(r), int(p)
-        salt = base64.b64decode(salt, validate=True)
-        digest = base64.b64decode(digest, validate=True)
+        n, r, p = int(n_text), int(r_text), int(p_text)
+        salt = base64.b64decode(salt_text, validate=True)
+        digest = base64.b64decode(digest_text, validate=True)
     except (ValueError, AttributeError, TypeError):
         return None
     if not (2 <= n <= _MAX_N and n & (n - 1) == 0 and 1 <= r <= _MAX_R and 1 <= p <= _MAX_P):
@@ -69,12 +74,12 @@ def _parse(stored):
     return n, r, p, salt, digest
 
 
-def looks_like_hash(stored):
+def looks_like_hash(stored: object) -> bool:
     """True if `stored` is a well-formed hash produced by hash_password()."""
     return isinstance(stored, str) and _parse(stored) is not None
 
 
-def verify_password(password, stored):
+def verify_password(password: object, stored: object) -> bool:
     """Constant-time check of `password` against a stored hash."""
     parsed = _parse(stored) if isinstance(stored, str) else None
     if parsed is None or not isinstance(password, str):

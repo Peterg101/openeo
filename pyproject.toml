@@ -21,6 +21,7 @@ fail_under = 60
 exclude_lines = [
     "pragma: no cover",
     "if __name__ == .__main__.:",
+    ": \\.\\.\\.$",          # typing.Protocol method stubs
 ]
 
 # Per-module line+branch coverage floors (percent), enforced in CI by
@@ -36,6 +37,15 @@ exclude_lines = [
 "lib/webapp/sessions.py" = 90
 "lib/webapp/settings_validation.py" = 90
 "lib/webapp/staticfiles.py" = 90
+"lib/webapp/policy.py" = 90
+"lib/webapp/protocols.py" = 90
+"lib/webapp/providers.py" = 90
+"lib/webapp/services/auth.py" = 90
+"lib/webapp/services/errors.py" = 90
+"lib/webapp/services/settings.py" = 90
+"lib/webapp/services/status.py" = 90
+"lib/webapp/services/system.py" = 90
+"lib/cloudproxy.py" = 90
 "lib/cloudpath.py" = 90
 "lib/cloud_tls.py" = 90
 "portal/setupfile.py" = 90
@@ -47,3 +57,32 @@ exclude_lines = [
 "lib/chargeroptions.py" = 70
 "openeoConfig.py" = 70
 "util.py" = 70
+
+# ---------------------------------------------------------------------------
+# Static typing: `mypy` (no arguments) checks the files below.
+# Legacy modules (charging logic etc.) are deliberately NOT annotated: they are
+# followed silently, and imports without stubs are ignored.
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+strict = true
+follow_imports = "silent"
+ignore_missing_imports = true
+files = [
+    "lib/webapp",
+    "lib/cloudpath.py",
+    "lib/cloud_tls.py",
+    "lib/cloudproxy.py",
+    "lib/internal_auth.py",
+    "lib/cloud.py",
+    "lib/configserver.py",
+    "portal/portal.py",
+    "portal/setupfile.py",
+]
+
+# These two subclass / call the (untyped) legacy plugin base class.
+[[tool.mypy.overrides]]
+module = ["lib.cloud", "lib.configserver"]
+disallow_subclassing_any = false
+disallow_untyped_calls = false
+disallow_any_unimported = false

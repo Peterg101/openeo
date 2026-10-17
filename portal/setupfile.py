@@ -14,35 +14,39 @@ PC). On boot this step:
 The parsing/decision logic is pure and unit tested; all side effects are injected
 through `Hooks`.
 """
+from __future__ import annotations
+
 import os
 import sys
 import time
+from collections.abc import Callable, Mapping
+from typing import Any
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from lib.webapp import passwords  # noqa: E402  (stdlib-only module)
 
-SETUP_FILE_NAME = "openeo-setup.txt"
-SETUP_FILE_CANDIDATES = ("/boot/firmware/" + SETUP_FILE_NAME, "/boot/" + SETUP_FILE_NAME)
-PSK_DIR = "/etc/openeo"
-PSK_FILE = PSK_DIR + "/hotspot.psk"
-CONFIG_DIR = "/home/pi/etc"
-PENDING_ADMIN_FILE = CONFIG_DIR + "/admin_password.hash"
-CONFIG_DB = CONFIG_DIR + "/config.db"
+SETUP_FILE_NAME: str = "openeo-setup.txt"
+SETUP_FILE_CANDIDATES: tuple[str, ...] = ("/boot/firmware/" + SETUP_FILE_NAME, "/boot/" + SETUP_FILE_NAME)
+PSK_DIR: str = "/etc/openeo"
+PSK_FILE: str = PSK_DIR + "/hotspot.psk"
+CONFIG_DIR: str = "/home/pi/etc"
+PENDING_ADMIN_FILE: str = CONFIG_DIR + "/admin_password.hash"
+CONFIG_DB: str = CONFIG_DIR + "/config.db"
 
-HEADER = (
+HEADER: str = (
     "# OpenEO first-boot setup. Fill these in, save, eject, then boot the Pi.\n"
     "# The Pi reads them once and then removes the plain-text values from this file.\n"
 )
-TRUE_VALUES = ("yes", "true", "1", "on", "y")
+TRUE_VALUES: tuple[str, ...] = ("yes", "true", "1", "on", "y")
 
 
-def parse_setup(text):
+def parse_setup(text: str) -> dict[str, str]:
     """Parse the setup file into a dict of lower-cased keys.
 
     Unknown keys are kept (and ignored later). A '#' only starts a comment at
     the beginning of a line, so passwords may contain '#'.
     """
-    values = {}
+    values: dict[str, str] = {}
     if text.startswith("﻿"):
         text = text[1:]
     for raw in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
@@ -54,21 +58,21 @@ def parse_setup(text):
     return values
 
 
-def parse_bool(value):
+def parse_bool(value: object) -> bool:
     return str(value).strip().lower() in TRUE_VALUES
 
 
-def is_valid_hotspot_psk(psk):
+def is_valid_hotspot_psk(psk: object) -> bool:
     """WPA2 passphrase: 8-63 printable ASCII characters."""
     return (isinstance(psk, str) and 8 <= len(psk) <= 63
             and all(0x20 <= ord(c) <= 0x7e for c in psk))
 
 
-def read_force_portal(text):
+def read_force_portal(text: str) -> bool:
     return parse_bool(parse_setup(text).get("force_portal", "no"))
 
 
-def render_applied(force_portal, applied, when):
+def render_applied(force_portal: str, applied: list[str], when: str) -> str:
     """The text written back to the setup file after values were consumed."""
     lines = [HEADER.rstrip("\n")]
     if applied:
@@ -80,31 +84,32 @@ def render_applied(force_portal, applied, when):
 
 class Hooks:
     """Side effects, replaced by fakes in tests."""
-    def store_psk(self, psk):            # pragma: no cover - interface
+    def store_psk(self, psk: str) -> None:            # pragma: no cover - interface
         raise NotImplementedError
-    def store_admin_hash(self, stored):  # pragma: no cover - interface
+    def store_admin_hash(self, stored: str) -> None:  # pragma: no cover - interface
         raise NotImplementedError
-    def have_psk(self):                  # pragma: no cover - interface
+    def have_psk(self) -> bool:                  # pragma: no cover - interface
         raise NotImplementedError
-    def have_admin(self):                # pragma: no cover - interface
+    def have_admin(self) -> bool:                # pragma: no cover - interface
         raise NotImplementedError
 
 
 class Result:
-    def __init__(self):
-        self.applied = []     # names of values stored
-        self.errors = []      # values rejected (left in the file for the owner to fix)
-        self.warnings = []
-        self.new_text = None  # replacement file text, or None to leave the file alone
-        self.force_portal = False
+    def __init__(self) -> None:
+        self.applied: list[str] = []     # names of values stored
+        self.errors: list[str] = []      # values rejected (left in the file for the owner to fix)
+        self.warnings: list[str] = []
+        self.new_text: str | None = None  # replacement file text, or None to leave the file alone
+        self.force_portal: bool = False
 
 
-def apply_setup(text, hooks, now="", hash_fn=passwords.hash_password):
+def apply_setup(text: str, hooks: Hooks, now: str = "",
+                hash_fn: Callable[[str], str] = passwords.hash_password) -> Result:
     """Apply a parsed setup file. Never logs or returns a plain-text secret."""
     values = parse_setup(text)
     result = Result()
     result.force_portal = parse_bool(values.get("force_portal", "no"))
-    remaining = {}
+    remaining: dict[str, str] = {}
 
     psk = values.get("hotspot_password", "")
     if psk:
@@ -152,7 +157,7 @@ def apply_setup(text, hooks, now="", hash_fn=passwords.hash_password):
 # Real side effects
 # ---------------------------------------------------------------------------
 
-def _write_private(path, data, uid, gid):
+def _write_private(path: str, data: str, uid: int, gid: int) -> None:
     tmp = path + ".tmp"
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
@@ -163,26 +168,26 @@ def _write_private(path, data, uid, gid):
 
 
 class SystemHooks(Hooks):
-    def __init__(self):
+    def __init__(self) -> None:
         import pwd
         pw = pwd.getpwnam("pi")
         self.pi_uid, self.pi_gid = pw.pw_uid, pw.pw_gid
 
-    def store_psk(self, psk):
+    def store_psk(self, psk: str) -> None:
         os.makedirs(PSK_DIR, mode=0o700, exist_ok=True)
         os.chmod(PSK_DIR, 0o700)
         _write_private(PSK_FILE, psk + "\n", 0, 0)
 
-    def store_admin_hash(self, stored):
+    def store_admin_hash(self, stored: str) -> None:
         if not os.path.isdir(CONFIG_DIR):
             os.mkdir(CONFIG_DIR)
             os.chown(CONFIG_DIR, self.pi_uid, self.pi_gid)
         _write_private(PENDING_ADMIN_FILE, stored + "\n", self.pi_uid, self.pi_gid)
 
-    def have_psk(self):
+    def have_psk(self) -> bool:
         return os.path.isfile(PSK_FILE)
 
-    def have_admin(self):
+    def have_admin(self) -> bool:
         if os.path.isfile(PENDING_ADMIN_FILE):
             return True
         try:
@@ -198,14 +203,15 @@ class SystemHooks(Hooks):
             return False
 
 
-def find_setup_file(candidates=SETUP_FILE_CANDIDATES, exists=os.path.isfile):
+def find_setup_file(candidates: tuple[str, ...] = SETUP_FILE_CANDIDATES,
+                    exists: Callable[[str], bool] = os.path.isfile) -> str | None:
     for path in candidates:
         if exists(path):
             return path
     return None
 
 
-def main():
+def main() -> int:
     path = find_setup_file()
     hooks = SystemHooks()
     if path is None:

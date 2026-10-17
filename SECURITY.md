@@ -41,7 +41,7 @@ fix them. With no admin password stored, the web UI refuses every login and says
 
 ### 2. Main web UI (FastAPI, `lib/webapp/`)
 * Rewritten as a FastAPI app built by `create_app(deps)`; routes get their collaborators through
-  `Depends` providers (`lib/webapp/deps.py`); the only code touching `globalState` is
+  `Depends` providers (`lib/webapp/deps.py`). Routes (`lib/webapp/app.py`) are thin; the logic lives in framework-free services (`lib/webapp/services/`) and the access-control decisions in `lib/webapp/policy.py`. The only code touching `globalState` is
   `lib/webapp/providers.py`. uvicorn runs single-worker, no reload, signal handlers disabled so it
   can run in the plugin thread.
 * **Login**: single admin; scrypt (N=2^14, r=8, p=1) with random salt stored in the config DB under
@@ -75,7 +75,7 @@ fix them. With no admin password stored, the web UI refuses every login and says
   required (`CERT_REQUIRED`) and the SHA-256 fingerprint of the presented certificate is compared
   with the pin (`lib/cloud_tls.py`). If the operator rotates the certificate, connections fail
   closed until the new certificate is committed.
-* Proxied paths are validated (`lib/cloudpath.py`): must start with a single `/`; no `@`, `\`,
+* Proxied paths are validated (`lib/cloudpath.py`; the request logic is `lib/cloudproxy.py`): must start with a single `/`; no `@`, `\`,
   scheme, `..`, whitespace or control characters; no `:` in the first segment. The URL is always
   `http://127.0.0.1:<configserver port><path>`; redirects are never followed.
 * Proxied requests authenticate with a random per-process token (`lib/internal_auth.py`) that the web

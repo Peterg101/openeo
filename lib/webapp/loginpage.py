@@ -1,8 +1,10 @@
 """The login page: self-contained HTML (inline CSS/JS, no external assets)."""
 
-NO_PASSWORD_MESSAGE = "No admin password set - edit openeo-setup.txt on the SD card, then reboot."
+from __future__ import annotations
 
-_PAGE = """<!doctype html>
+NO_PASSWORD_MESSAGE: str = "No admin password set - edit openeo-setup.txt on the SD card, then reboot."
+
+_PAGE: str = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenEO - Log in</title>
@@ -46,7 +48,7 @@ document.getElementById("f").addEventListener("submit", async function (e) {
 """
 
 
-def render_login_page(has_password):
+def render_login_page(has_password: bool) -> str:
     if has_password:
         banner, disabled = "", ""
     else:

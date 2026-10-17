@@ -5,5 +5,5 @@ accepted by the web UI from the loopback address.
 """
 import secrets
 
-HEADER = "X-OpenEO-Internal"
-TOKEN = secrets.token_urlsafe(32)
+HEADER: str = "X-OpenEO-Internal"
+TOKEN: str = secrets.token_urlsafe(32)

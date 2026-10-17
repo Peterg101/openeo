@@ -13,7 +13,11 @@ Configuration example:
 
 """
 #################################################################################
+from __future__ import annotations
+
 import logging, threading
+from collections.abc import Iterator
+from typing import Any
 
 from lib.PluginSuperClass import PluginSuperClass
 
@@ -21,7 +25,7 @@ from lib.PluginSuperClass import PluginSuperClass
 _LOGGER = logging.getLogger(__name__)
 
 
-def _make_server(app, port):
+def _make_server(app: Any, port: int | str) -> Any:
     """uvicorn server that can run in a non-main thread, single worker, no reload."""
     import contextlib
     import uvicorn
@@ -30,11 +34,11 @@ def _make_server(app, port):
         # Signal handlers can only be installed from the main thread; the main
         # thread belongs to openeo's control loop. Older uvicorn calls
         # install_signal_handlers(), newer ones use capture_signals().
-        def install_signal_handlers(self):
+        def install_signal_handlers(self) -> None:
             pass
 
         @contextlib.contextmanager
-        def capture_signals(self):
+        def capture_signals(self) -> Iterator[None]:
             yield
 
     config = uvicorn.Config(app, host="0.0.0.0", port=int(port), log_level="warning",
@@ -57,13 +61,13 @@ class configserverClassPlugin(PluginSuperClass):
                         "update_finish": {"type": "int","default":0},
                         "update_log": {"type": "str","default":""}}
 
-    def __init__(self,configParam):
+    def __init__(self, configParam: Any) -> None:
         super().__init__(configParam)
 
         self.serverthread = threading.Thread(target=self.webserver, name='serverthread', daemon=True)
         self.serverthread.start()
 
-    def webserver(self):
+    def webserver(self) -> None:
         try:
             from lib.webapp.app import create_app
             from lib.webapp.providers import build_deps
