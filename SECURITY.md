@@ -32,7 +32,7 @@ fix them. With no admin password stored, the web UI refuses every login and says
   really holds `wpa-psk` before bringing it up.
 * HTTP server binds `192.168.4.1:81` only (was all interfaces). The `80 -> 81` iptables redirect
   stays on `wlan1` only and is now removed on stop.
-* Runs as `pi` (was root); privileged steps use `sudo`. `dnsmasq` is no longer enabled at boot.
+* Runs as `pi` (was root) with only `CAP_NET_BIND_SERVICE` granted by its unit (port 81); privileged steps use `sudo`. `dnsmasq` is no longer enabled at boot.
 * `set_wifi` / `set_timezone` are POST (were state-changing GETs); all POSTs need
   `Content-Type: application/json` and a same-origin `Origin`/`Referer`.
 * `set_ssh`: the key must be one line (newline / CR / control characters rejected; the old regex
@@ -92,6 +92,9 @@ imports it. `tools/update_openeo.sh` downloads the updater to a temp file and ru
 * The web UI is plain HTTP on the LAN: the login password and session cookie travel in clear text.
   Use it only on a trusted network (or put a TLS proxy in front).
 * Sessions live in RAM; restarting openeo logs everyone out.
+* DNS rebinding: a hostile page that rebinds its name to the charger can reach the unauthenticated
+  routes (`/login`, `/health`) but carries no session cookie, so it can only guess passwords
+  (rate limited per client IP). A `Host` allowlist would close this; not added.
 * The portal `set_ssh` endpoint lets anyone who knows the hotspot password install an SSH key, and
   `pi` has `NOPASSWD: ALL` sudo, so that key is root. The hotspot password is the only barrier.
 * `tools/debug` uploads a debug report to a third-party host (`eo.scott.land`); secrets are now

@@ -39,7 +39,10 @@ def _make_server(app, port):
 
     config = uvicorn.Config(app, host="0.0.0.0", port=int(port), log_level="warning",
                             access_log=False, log_config=None, loop="asyncio",
-                            http="h11", ws="none", lifespan="off", workers=1)
+                            http="h11", ws="none", lifespan="off", workers=1,
+                            # No reverse proxy in front of us: the client address must be
+                            # the real socket peer (rate limiting, loopback-only internal token).
+                            proxy_headers=False, server_header=False)
     return _ThreadServer(config)
 
 

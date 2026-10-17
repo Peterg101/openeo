@@ -49,6 +49,7 @@ def test_make_server_config_is_lightweight(env):
     server = cs._make_server(env.app, "8099")
     c = server.config
     assert (c.host, c.port, c.workers, c.reload, c.lifespan) == ("0.0.0.0", 8099, 1, False, "off")
+    assert c.proxy_headers is False   # X-Forwarded-For must never rewrite the client IP
     assert server.install_signal_handlers() is None
     with server.capture_signals():
         pass
