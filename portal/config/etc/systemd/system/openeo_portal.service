@@ -1,10 +1,14 @@
 [Unit]
-Description=openeo startup
-After=multi-user.target
+Description=OpenEO Wi-Fi setup portal (self-gating: exits unless setup is needed)
+After=network.target NetworkManager.service openeo_firstboot.service
+Wants=openeo_firstboot.service
 
 [Service]
-ExecStart=/home/pi/openeo/portal/portal.py
-Type=oneshot
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/openeo/portal
+ExecStart=/usr/bin/python3 /home/pi/openeo/portal/portal.py
+TimeoutStopSec=60
 
 [Install]
 WantedBy=multi-user.target

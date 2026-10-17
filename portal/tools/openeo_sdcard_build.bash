@@ -31,6 +31,11 @@ mkdir -p "$MOUNT_DIR"
 sudo mount "$ROOT_DEV" "$MOUNT_DIR"
 sudo mount "$BOOT_DEV" "$MOUNT_DIR/boot"
 
+# === FIRST-BOOT SETUP FILE ===
+# The owner fills this in on the boot partition (bootfs) before first boot.
+echo ">> Installing openeo-setup.txt template on the boot partition..."
+sudo cp "$MYDIR/../../openeo-setup.txt" "$MOUNT_DIR/boot/openeo-setup.txt"
+
 # === CHROOT SETUP ===
 echo ">> Copying resolv.conf..."
 sudo cp /etc/resolv.conf "$MOUNT_DIR/etc/resolv.conf"
