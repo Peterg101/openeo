@@ -31,6 +31,7 @@ import sys
 
 import globalState, util
 from openeoCharger import openeoChargerClass
+from lib.webapp.secret_keys import redact_config_for_log
 
 # logging for use in this module
 _LOGGER = logging.getLogger(__name__)
@@ -73,13 +74,8 @@ def main():
                 # Modue should be enabled
                 if modulename in globalState.stateDict["_moduleDict"]:
                     # Module already loaded, so just configure it
-                    # Sanitize sensitive config for logging
-                    safe_config = pluginConfig.copy()
-                    if modulename == "homeassistant" and isinstance(safe_config, dict):
-                        if "mqtt_password" in safe_config:
-                            safe_config["mqtt_password"] = "***"
-                        if "mqtt_username" in safe_config:
-                            safe_config["mqtt_username"] = "***"
+                    # Sanitize sensitive config (passwords, tokens, private keys) for logging
+                    safe_config = redact_config_for_log(pluginConfig)
                     _LOGGER.info("Configuring %s with %s", modulename, safe_config)
                     globalState.stateDict["_moduleDict"][modulename].configure(pluginConfig)
                 else:

@@ -1,8 +1,8 @@
 #################################################################################
 """
 OpenEO Module: Config Server
-Spawns a webserver thread which hosts the web interface for setting the timer 
-schedule. Note that this will only ever update the first schedule in the scheduler
+Spawns a webserver thread which hosts the (FastAPI) web interface for setting the timer 
+schedule. All routes live in lib/webapp/app.py and require a login. Note that this will only ever update the first schedule in the scheduler
 list of "on" periods for the charger.
 
 I expect this module could be integrated to the webserver module to reduce the 
@@ -13,36 +13,41 @@ Configuration example:
 
 """
 #################################################################################
-import re, logging, threading, json, http.server, socketserver, datetime, socket, os
-import copy, time, numbers, urllib.parse, subprocess,sys
+import logging, threading
 
-import globalState, util
 from lib.PluginSuperClass import PluginSuperClass
-
-import lib.configserver_updater
-import os.path
-
 
 # logging for use in this module
 _LOGGER = logging.getLogger(__name__)
 
-class ThreadedServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
-    """This child class allows us to set the REUSEADDR and REUSEPORT options on the socket
-    which means the Python task can be started and stopped without breaking the config server
-    due to the previous socket being in TIME_WAIT.
-    
-    It's now threaded, allowing for multiple requests to be handled in parallel."""
-    def server_bind(self):
-        # Set socket options before binding
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        super().server_bind()
-        
+
+def _make_server(app, port):
+    """uvicorn server that can run in a non-main thread, single worker, no reload."""
+    import contextlib
+    import uvicorn
+
+    class _ThreadServer(uvicorn.Server):
+        # Signal handlers can only be installed from the main thread; the main
+        # thread belongs to openeo's control loop. Older uvicorn calls
+        # install_signal_handlers(), newer ones use capture_signals().
+        def install_signal_handlers(self):
+            pass
+
+        @contextlib.contextmanager
+        def capture_signals(self):
+            yield
+
+    config = uvicorn.Config(app, host="0.0.0.0", port=int(port), log_level="warning",
+                            access_log=False, log_config=None, loop="asyncio",
+                            http="h11", ws="none", lifespan="off", workers=1)
+    return _ThreadServer(config)
+
+
 #################################################################################
 class configserverClassPlugin(PluginSuperClass):
-    pretty_name = "Config Server"
+    PRETTY_NAME = "Config Server"
     CORE_PLUGIN = True # Can't be disabled from the UI
-    
+
     pluginParamSpec={   "enabled":      {"type": "bool","default": True},
                         "port":  {"type": "int","default":80},
                         "update_start": {"type": "int","default":0},
@@ -56,428 +61,16 @@ class configserverClassPlugin(PluginSuperClass):
         self.serverthread.start()
 
     def webserver(self):
-        socketserver.TCPServer.allow_reuse_address = True
-        with ThreadedServer(("", self.pluginConfig["port"]), self.CustomHandler) as httpd:
+        try:
+            from lib.webapp.app import create_app
+            from lib.webapp.providers import build_deps
+            deps = build_deps()
+            deps.auth.import_pending()
+            if not deps.auth.has_password():
+                _LOGGER.warning("No admin password is set: all web UI logins are refused. "
+                                "Edit openeo-setup.txt on the SD card boot partition and reboot.")
+            server = _make_server(create_app(deps), self.pluginConfig["port"])
             _LOGGER.info("Serving Configuration webserver on port {}".format(self.pluginConfig["port"]))
-            try:
-                httpd.serve_forever()
-            except KeyboardInterrupt:
-                httpd.shutdown()
-
-    #################################################################################
-    # Everything from here down is the config handling
-    
-    class CustomHandler(http.server.BaseHTTPRequestHandler):
-        config = {}
-        _context = {}
-        selected_page = ""
-
-
-        # Load initial configuration
-        def load_config(self):
-            # We can't load config directly from sqlite or from the config module, as we need the modules to interpret and typecast
-            # the attributes, so instead, we need to recompile the full config from polling the plugin modules
-            # There must be a better way...
-
-            self.config={}
-            for modulename,module in globalState.stateDict["_moduleDict"].items():
-                    self.config[modulename]=module.pluginConfig
-            return True
-        
-        def handle(self):
-            try:
-                super().handle()
-            except ConnectionResetError:
-                pass
-            
-        def do_OPTIONS(self):
-            self.send_response(200)
-            self.send_header("Content-type", "application/json")
-            # required for development and testing only
-            if globalState.stateDict["app_version"]=="0.0" or globalState.stateDict["app_version"]=="main" :
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.send_header("Access-Control-Allow-Headers","*")
-            self.end_headers()
-
-        def do_HEAD(self):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
-            self.end_headers()
-
-        def do_GET(self):
-            globalState.configDB.logwrite(f"page GET request:{self.path}")
-
-            ################################
-            # Prometheus exporter
-            if format(self.path)=="/metrics":
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain")
-                self.end_headers()
-
-                # Dump all global variables in prometheus exporter format
-                for cfgkey,cfgvalue in globalState.stateSnapshot.items():
-                    if cfgkey[0]!="_":
-                        # Convert any bool values to int
-                        if isinstance(cfgvalue, (bool)):
-                            cfgvalue=int(cfgvalue)
-
-                        # Then only show numerics
-                        if isinstance(cfgvalue, numbers.Number):
-                            if (cfgkey=="eo_charger_state_id"):
-                                self.wfile.write(str("# HELP "+cfgkey+" "+globalState.stateSnapshot["eo_charger_state"]+"\n").encode('utf-8'))
-
-                            self.wfile.write(str("# TYPE "+cfgkey+" gauge\n").encode('utf-8'))
-                            self.wfile.write(str(cfgkey+"{} "+str(cfgvalue)+"\n").encode('utf-8'))   
-                return
-
-            ################################
-            # Home Assistant
-            if format(self.path)=="/api":
-                status={}
-                status["eo_charger_state"]={"id":globalState.stateSnapshot["eo_charger_state_id"],"status":globalState.stateSnapshot["eo_charger_state"]}
-
-
-                for cfgkey,cfgvalue in globalState.stateSnapshot.items():
-                    if cfgkey[0]!="_":
-                        if isinstance(cfgvalue, numbers.Number):
-                            if (cfgkey!="eo_harger_state_id") and (cfgkey!="eo_charger_state"):
-                                    status[cfgkey]=cfgvalue
-
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps(status).encode('utf-8'))
-                return
-
-            ##################################
-            # This is a potential DoS end point.  Not sure how to secure this if we want
-            # to offer the users an option.
-            if self.path == "/restart":
-                _LOGGER.info("User requested to restart openeo")
-                self.send_response(200)
-                self.send_header('Content-type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({"status": "requested"}).encode("utf-8"))
-                time.sleep(1.0) # Give time for the packet to be absorbed
-                util.restart_python()
-                
-            ###################################################################
-            ## expose the configuration the running config to the api
-            ## we can also use POST/setconfig to write the configuration
-            if self.path == "/getconfig":
-                self.send_response(200)
-                self.send_header("Content-type", "application/json")
-                # required for development and testing only
-                if globalState.stateDict["app_version"]=="0.0" or globalState.stateDict["app_version"]=="main" :
-                    self.send_header("Access-Control-Allow-Origin", "*")
-                self.end_headers()
-
-                self.load_config()
-                configCopy = {}
-                for modulename, module in self.config.items():
-                    configCopy[modulename] = {
-                        key: value
-                        for key, value in module.items()
-                        if not key.startswith("_")
-                    }
-
-                self.wfile.write(json.dumps(configCopy).encode("utf-8"))
-                return
-            
-            ###################################################################
-            ## expose the logger module metrics to the api, if that is available
-            ## in cfg
-            if re.search("^/debugdata",self.path):
-                results = {}
-                for cmd in ["whoami",
-                            "df -k",
-                            "netstat -4l",
-                            "ps -ef | grep openeo",
-                            "free -h",
-                            "systemctl status openeo --no-pager  --output=short-precise",
-                            "ls -l /home/pi/releases/",
-                            "journalctl --list-boots",
-                            "journalctl -b 2",
-                            "journalctl -b 1",
-                            "journalctl"
-                            ]:
-                    try:
-                        result = subprocess.run(
-                            cmd,
-                            shell=True,           # allows string commands
-                            capture_output=True,  # capture stdout/stderr
-                            text=True,            # decode to string
-                            check=True            # raise exception if exit code != 0
-                        )
-                        results[cmd] = result.stdout.strip()
-                    except subprocess.CalledProcessError as e:
-                        results[cmd] = f"Error: {e.stderr.strip() or e}"
-
-                # Get Log entries
-                results["log"]=globalState.configDB.logget()
-                self.send_response(200)
-                self.send_header("Content-type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps(results).encode("utf-8"))
-                return
-            ###################################################################
-            ## expose the logger module metrics to the api, if that is available
-            ## in cfg
-            if re.search("^/getchartdata",self.path):
-                # Only respond if the logger is active
-                if "_dataLog" in globalState.stateDict:
-
-
-
-                    query_components = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                    query_type = query_components.get('type', [''])[0]  # Default to empty string if not found
-                    query_since = query_components.get('since', [''])[0]  # Default to empty string if not found
-                    query_series = query_components.get('series', [''])[0]  # Default to None if not found
-
-                    try:
-                        query_since = datetime.datetime.strptime(query_since,"%Y-%m-%d %H:%M:%S.%f")
-                    except ValueError:
-                        query_since=None
-
-                    try:
-                        query_series = query_series.split(",")
-                    except ValueError:
-                        query_series=None
-                    if query_series==['']:
-                        query_series=None
-
-                    self.send_response(200)
-                    self.send_header("Content-type", "application/json")
-                    if globalState.stateDict["app_version"]=="0.0" or globalState.stateDict["app_version"]=="main" :
-                        self.send_header("Access-Control-Allow-Origin", "*")
-                    self.end_headers()
-
-                    if (query_type=="plotly"):
-
-                            self.wfile.write(json.dumps(globalState.stateDict["_dataLog"].get_plotly(query_since,query_series),default=str).encode("utf-8"))
-                            return
-                    else:
-                            self.wfile.write(json.dumps(globalState.stateDict["_dataLog"].get_data(query_since,query_series),default=str).encode("utf-8"))
-                            return 
-
-                else:
-                    self.send_error(404, "Not Found")
-                    return
-
-            ###################################################################
-            ## expose the running status to the api, as recorded in the global dict in cfg
-            if self.path == "/getstatus":
-                # copy is needed to avoid a RuntimeError due to this dict changing size
-                # we can't deepcopy because in some cases the modules within cannot be pickled (e.g. thread objects)
-                status = copy.copy(globalState.stateSnapshot)
-                for x in globalState.stateSnapshot:
-                    if x[0]=="_":
-                        # an underscore denotes a private configuration that probably shouldn't be exposed
-                        status.pop(x,None)
-
-                self.send_response(200)
-                self.send_header("Content-type", "application/json")
-
-                # required for development and testing only
-                if globalState.stateDict["app_version"]=="0.0" or globalState.stateDict["app_version"]=="main" :
-                    self.send_header("Access-Control-Allow-Origin", "*")
-
-                self.end_headers()
-                self.wfile.write(json.dumps(status).encode("utf-8"))
-                return
-            ###################################################################
-            ## expose the module settings options
-            if self.path == "/get_user_settings":
-                user_settings = {}
-                for modulename,module in globalState.stateDict["_moduleDict"].items():
-                    print(f"Checking module {modulename} for settings")
-                    if hasattr(module, "get_user_settings"):
-                        try:
-                            fields = module.get_user_settings()
-
-                            if not module.CORE_PLUGIN:
-                                fields.insert(0,{"type":'boolean', "name":"enabled", "label": 'Enable Module', "default": module.pluginConfig["enabled"]})
-
-                            
-                            if isinstance(fields, list) and len(fields) > 0:      
-                                user_settings[modulename]={
-                                    "name": module.PRETTY_NAME ,
-                                    "fields": fields
-                                    };
-                            
-                        except Exception as e:
-                            _LOGGER.error("Exception getting options for %r: %r" % (module, e))
-
-                        
-
-                self.send_response(200)
-                self.send_header("Content-type", "application/json")
-
-                # required for development and testing only
-                if globalState.stateDict["app_version"]=="0.0" or globalState.stateDict["app_version"]=="main" :
-                    self.send_header("Access-Control-Allow-Origin", "*")
-
-                self.end_headers()
-                self.wfile.write(json.dumps(user_settings).encode("utf-8"))
-                return
-                        
-            ###################################################################
-            ## get session data
-            if self.path == "/getsessiondata":
-                sessiondata=[]
-                if "chargersession" in globalState.stateDict["_moduleDict"]:
-                    sessiondata=globalState.stateDict["_moduleDict"]["chargersession"].get_sessions()
-                    
-                self.send_response(200)
-                self.send_header("Content-type", "application/json")
-                # required for development and testing only
-                if globalState.stateDict["app_version"]=="0.0" or globalState.stateDict["app_version"]=="main" :
-                    self.send_header("Access-Control-Allow-Origin", "*")
-
-                self.end_headers()
-                self.wfile.write(json.dumps(sessiondata).encode("utf-8"))
-                return
-                             
-            #############
-            # Revert to serving files from the filesystem
-            # @TODO: not yet sure how I can have this CustomHandler class pick up self.myName from the parent
-            # object, to remove this hardcoded subdirectory name
-            
-            # Try to prevent directory backtracking.  If we detect ".." in the URL, that's not allowed.
-            if ".." in self.path:
-                self.send_error(403, "Forbidden - but, nice try")
-                return
-            
-            path_components = urllib.parse.urlsplit(self.path)
-            _LOGGER.debug("Path components: %s" % repr(path_components))
-            
-            # Handle root request
-            req_path = path_components.path
-            if req_path == "/" or req_path == "":
-                req_path = "/static/index.html"
-            
-            file_path  = 'lib/configserver' + req_path
-            _LOGGER.debug("serving: " + file_path)
-                
-            file, ext = os.path.splitext(file_path)
-            ext = ext.lstrip('.')
-            base = os.path.basename(file)
-            _LOGGER.debug("file %s ext %s" % (file, ext))
-            
-            # HTML files are handled as templated objects.
-            if ext.lower() == "html":
-
-                if os.path.isfile(file_path):
-                    self.send_response(200)
-                    self.send_header("Content-type", "text/html")
-                    self.end_headers()
-                    with open(file_path, mode='rb') as read_file:
-                        while rBytes := read_file.read(1024):
-                            self.wfile.write(rBytes)
-                    return
-
-            extension_to_mime_enc = {
-                'ico' : ('image/icon', None),
-                'png' : ('image/png', None),
-                'svg' : ('image/svg+xml', 'utf-8'),
-                'js' : ('text/javascript', 'utf-8'),
-                'css' : ('text/css', 'utf-8'),
-            }
-            
-            for k, v in extension_to_mime_enc.items():
-                if ext.lower() == k:
-                    # If encoding is None, open as binary file
-                    mode = 'r'
-                    if v[1] == None:
-                        mode = 'rb'
-                        
-                    try:
-                        with open(file_path, mode) as f:
-                            self.send_response(200)
-                            self.send_header("Content-type", v[0])
-                            self.end_headers()
-                            if v[1] != None:
-                                self.wfile.write(f.read().encode(v[1]))
-                            else:
-                                self.wfile.write(f.read())
-                            return
-                    except FileNotFoundError:
-                        self.send_error(404, "Not Found")
-                        _LOGGER.error("404 - file %s ext %s" % (file, ext))
-
-                        return
-            
-            # If we fell through, then no file was found
-            self.send_error(404, "Not Found")
-            _LOGGER.error("404 catchall - file %s ext %s" % (file, ext))
-            return
-        
-
-        def do_POST(self):
-            _LOGGER.info("do_POST(%s)" % self.path)
-            globalState.configDB.logwrite(f"page POST request:{self.path}")
-
-            
-            if self.path == "/update":
-                ##################################
-                # API for updating the software. This will sensecheck what it's being asked, then return a result
-                # and then leave the thread running with the upgrade process updating the output into the database
-                content_length = int(self.headers['Content-Length'])
-                post_data = json.loads(self.rfile.read(content_length).decode('utf-8'))
-                action=post_data["action"]
-
-                self.send_response(200)
-                self.send_header('Content-type', 'application/json')
-                # required for development and testing only
-                if globalState.stateDict["app_version"]=="0.0" or globalState.stateDict["app_version"]=="main" :
-                    self.send_header("Access-Control-Allow-Origin", "*")
-                self.end_headers()
-                self.wfile.write(json.dumps(lib.configserver_updater.OpenEO_updater(action)).encode("utf-8"))
-                return 
-
-
-            elif self.path == "/setsettings":
-                ##################################
-                # API for syncing settings via POST variables.
-                # This is effectively the same as /setconfig, but does not require the data to be serialised
-                # as JSON, accepting colon-delimited variables to build the mergable dictionary.
-                # It redirects the user to the settings.html page when done.
-                content_length = int(self.headers['Content-Length'])
-                post_data = self.rfile.read(content_length).decode('utf-8')
-                post_vars = urllib.parse.parse_qsl(post_data)
-                
-                #print(f"setsettings called")
-                # It is legal for POST keys to be duplicated; that shouldn't happen when saving settings, but #
-                # even if it does, we'll just take the last value we see.
-
-                for modulekey, value in post_vars:
-                    module,key=modulekey.split(':',1)
-                    _LOGGER.debug("%r : %r : %r" % (module, key, value))
-                    globalState.configDB.set(module,key,value)
-                
-                # Now instruct all modules to reconfigure themselves. Probably overkill
-                for modulename,module in globalState.stateDict["_moduleDict"].items():
-                    module.configure(globalState.configDB.get(modulename))
-
-                self.load_config()
-                configCopy = {}
-                for modulename, module in self.config.items():
-                    configCopy[modulename] = {
-                        key: value
-                        for key, value in module.items()
-                        if not key.startswith("_")
-                    }
-                    
-                self.send_response(200)
-                self.send_header("Content-type", "application/json")
-                if globalState.stateDict["app_version"]=="0.0" or globalState.stateDict["app_version"]=="main" :
-                    self.send_header("Access-Control-Allow-Origin", "*")
-
-                self.end_headers()
-                self.wfile.write(json.dumps({"status": "success", "config": configCopy}).encode("utf-8"))
-
-            else:
-                _LOGGER.error("Unknown endpoint '%s'" % self.path)
-                self.send_error(404, "Not Found")
-                return
-
+            server.run()
+        except Exception:
+            _LOGGER.exception("Config server failed")
