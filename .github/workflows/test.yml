@@ -26,8 +26,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: python -m pip install pytest pytest-cov psutil "${{ matrix.packages }}"
+      - name: Install test dependencies
         shell: bash
+        env:
+          PACKAGES: ${{ matrix.packages }}
+        # One requirement per line: quoted as a single argument pip rejects the
+        # list, unquoted bash would read "<2" as a redirect.
+        run: |
+          tr ' ' '\n' <<<"$PACKAGES" > "$RUNNER_TEMP/requirements.txt"
+          python -m pip install pytest pytest-cov psutil -r "$RUNNER_TEMP/requirements.txt"
       - name: Tests with branch coverage
         run: python -m pytest tests --cov --cov-branch --cov-report=term
       - name: Per-module coverage floors
