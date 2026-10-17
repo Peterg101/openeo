@@ -5,22 +5,30 @@ OpenEO Module: Cloud Proxy Server
 
 """
 #################################################################################
-import logging, threading, socket,ssl,pprint
-import urllib,re,time
-import globalState,util
-import traceback
+import logging, threading, socket, ssl
+import urllib.request, urllib.error, re, time
+import globalState, util
 from lib.PluginSuperClass import PluginSuperClass
+from lib import cloud_tls, cloudpath, internal_auth
 
 # logging for use in this module
 _LOGGER = logging.getLogger(__name__)
 
-   
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow redirects: the proxy must not be led off the local web UI."""
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
 #################################################################################
 class cloudClassPlugin(PluginSuperClass):
     PRETTY_NAME = "OpenEO Cloud"
     CORE_PLUGIN = False # Can't be disabled from the UI
     
-    pluginParamSpec={   "enabled":      {"type": "bool","default": True},
+    # The cloud module is OFF unless the owner explicitly enables it.
+    pluginParamSpec={   "enabled":      {"type": "bool","default": False},
                         "authtoken":    {"type": "str","default":""},
                         "server":       {"type": "str","default":"ssl.openeo.uk"},
                         "port":         {"type": "int","default":8381}
@@ -96,11 +104,14 @@ class cloudClassPlugin(PluginSuperClass):
                 s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
                 s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5)
 
-                context = ssl.create_default_context()
-                context.check_hostname = False
-                context.verify_mode = ssl.CERT_NONE
+                # Certificate verification is mandatory: only the pinned certificate
+                # for ssl.openeo.uk is trusted (see lib/cloud_tls.py).
+                context = cloud_tls.make_ssl_context()
                 self.ssl_sock = context.wrap_socket(s, server_hostname=self.pluginConfig['server'])
+                self.ssl_sock.settimeout(30.0)
                 self.ssl_sock.connect((self.pluginConfig['server'], self.pluginConfig['port']))
+                cloud_tls.verify_pinned_peer(self.ssl_sock.getpeercert(binary_form=True))
+                self.ssl_sock.settimeout(None)
                 
                 #self.ssl_sock.settimeout(15.0)  # 5 seconds
                 f = self.ssl_sock.makefile('rw', encoding='utf-8', newline='\n')
@@ -157,37 +168,52 @@ class cloudClassPlugin(PluginSuperClass):
         _LOGGER.warning(f"OpenEO Cloud - closed comms")
 
 
+    @staticmethod
+    def _local_port():
+        """Port the local web UI listens on."""
+        try:
+            return int(globalState.stateDict["_moduleDict"]["configserver"].pluginConfig["port"])
+        except Exception:
+            return 80
+
     def get_output(self,command):
 
         returnval={}
-        returnval["headers"]=""
-        returnval["body"]=""
+        returnval["headers"]=[]
+        returnval["body"]=b""
         returnval["bodylen"]=0
 
-        #print(f"command string=\"{command}\"")
         m = re.search('^(GET|POST) ([^ ]+) ?(.*)$', command)
 
         if not m:
-            _LOGGER.error(f"OpenEO Cloud error: Malformed command {command}")
+            _LOGGER.error("OpenEO Cloud error: Malformed command")
             return(returnval)
 
         method=m.group(1)
 
-        # This is important security consideration: only ever allow pages to be retrieved from localhost.
-        URL="http://localhost"+m.group(2)
+        # Security: the cloud may only ever reach the local web UI. The path is
+        # validated and the URL is built from a fixed loopback authority.
+        try:
+            URL=cloudpath.build_proxy_url(m.group(2), self._local_port())
+        except ValueError as e:
+            _LOGGER.error("OpenEO Cloud error: refused to proxy path (%s)" % e)
+            return(returnval)
 
-        match method:
-            case "GET":
-                response = urllib.request.urlopen(URL)
-                returnval["headers"]=response.getheaders()
-                returnval["body"] = response.read()
-            case "POST":
-                data=m.group(3)
-                data = data.encode('ascii') # data should be bytes
-                response = urllib.request.urlopen(URL,data)
-                returnval["headers"]=response.getheaders()
-                returnval["body"] = response.read()
+        # Proxied requests authenticate with the per-process internal token.
+        headers={internal_auth.HEADER: internal_auth.TOKEN}
+        data=None
+        if method=="POST":
+            data=m.group(3).encode('utf-8')
+            headers["Content-Type"]="application/json"
 
+        request=urllib.request.Request(URL, data=data, headers=headers, method=method)
+        try:
+            response = _OPENER.open(request, timeout=30)
+        except urllib.error.HTTPError as e:
+            # HTTPError is itself a response (status, headers, body)
+            response = e
+        returnval["headers"]=response.getheaders()
+        returnval["body"] = response.read()
 
         returnval["bodylen"]=len(returnval["body"])
         return(returnval)
