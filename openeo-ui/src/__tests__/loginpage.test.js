@@ -6,7 +6,7 @@ import { stubLocation, jsonResponse } from "./setup";
 // The login page is server-rendered (lib/webapp/loginpage.py) so it needs no public assets.
 // Load the REAL page template and run its inline script against a mocked fetch.
 const src = readFileSync(resolve(process.cwd(), "../lib/webapp/loginpage.py"), "utf8");
-const template = src.split('_PAGE = """')[1].split('"""')[0];
+const template = src.split(/_PAGE(?:: str)? = """/)[1].split('"""')[0];
 
 function mount(hasPassword = true) {
   const html = template
