@@ -1,5 +1,13 @@
 # OpenEO Config Server API Documentation
 
+> ## Authentication (required reading)
+> Every endpoint requires authentication except `GET /login`, `POST /login` and `GET /health`.
+> - **Session**: `POST /login` with `{"password": "..."}` (JSON) sets an `HttpOnly; SameSite=Strict` cookie `openeo_session`. `POST /logout`, `POST /change_password` (`current_password`, `new_password`), `POST /api_token` (`password`; returns the token once) and `POST /api_token/revoke` manage credentials. Failed logins are rate limited (HTTP 429, `Retry-After`).
+> - **Bearer token**: `GET /metrics` and `GET /api` (only) accept `Authorization: Bearer <token>`.
+> - All state-changing requests (POST) must send `Content-Type: application/json` and, when an `Origin`/`Referer` header is present, it must match `Host` (HTTP 403 / 415 otherwise). Form-encoded bodies are no longer accepted.
+> - `POST /setsettings` takes a JSON object `{"module:key": value}`. Unknown modules/keys, private (`_`-prefixed) keys are rejected with HTTP 400 and nothing is written. Secret values are returned as `********`; sending `********` back means "unchanged".
+> - `GET /restart` no longer exists; use `POST /restart`.
+
 The Config Server module (`configserver.py`) provides a comprehensive REST API for monitoring, configuring, and managing the OpenEO charger. It runs as a threaded HTTP server on the configured port (default: 80).
 
 ## Base URL
@@ -330,7 +338,7 @@ GET /getchartdata?type=raw&since=2024-08-22%2010:00:00.000000
 
 ### System Management Endpoints
 
-#### GET `/restart`
+#### POST `/restart`
 Requests a restart of the OpenEO application.
 
 **Response**:
@@ -359,7 +367,7 @@ Retrieves system debug information and logs for troubleshooting.
   "whoami": "pi",
   "df -k": "Filesystem     1K-blocks    Used Available Use% Mounted on...",
   "netstat -4l": "Active Internet connections (only servers)...",
-  "ps -ef | grep openeo": "pi 1234 1 0 10:00 ? 00:00:05 /usr/bin/python3",
+  "ps -ef": "pi 1234 1 0 10:00 ? 00:00:05 /usr/bin/python3",
   "free -h": "              total        used        free...",
   "systemctl status openeo --no-pager --output=short-precise": "● openeo.service - OpenEO Charger...",
   "ls -l /home/pi/releases/": "total 156...",

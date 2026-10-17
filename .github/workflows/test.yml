@@ -1,0 +1,54 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # What Raspberry Pi OS Bookworm ships (apt: python3-fastapi 0.92, pydantic v1)
+          - name: fastapi-0.92-pydantic-v1
+            packages: "fastapi==0.92.0 pydantic<2 starlette==0.25.0 httpx<0.28 uvicorn==0.17.6 h11<0.15"
+          # What Trixie / current PyPI ships (pydantic v2)
+          - name: fastapi-latest
+            packages: "fastapi uvicorn httpx"
+    name: python (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install pytest pytest-cov psutil "${{ matrix.packages }}"
+        shell: bash
+      - name: Tests with branch coverage
+        run: python -m pytest tests --cov --cov-branch --cov-report=term
+      - name: Per-module coverage floors
+        run: python tests/check_coverage.py
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: openeo-ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: openeo-ui/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - name: Committed bundle is up to date
+        run: |
+          npx vite build
+          cmp dist/assets/index-*.js ../lib/configserver/static/ui.js
+          cmp dist/assets/index-*.css ../lib/configserver/static/ui.css

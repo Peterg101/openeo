@@ -5,3 +5,8 @@ openeo.log
 tools/remote_id.txt
 openeo-ui/node_modules
 openeo-ui/dist
+.coverage
+coverage.json
+htmlcov/
+.pytest_cache/
+.venv/

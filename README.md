@@ -1,9 +1,9 @@
 # Cloudless Software for the EO Smart Home Hub/Mini and Mini Pro 2 EV Charger
 
-[![Latest Release](https://img.shields.io/github/v/release/minceheid/openeo)](https://github.com/minceheid/openeo/releases/latest)
+[![Latest Release](https://img.shields.io/github/v/release/Peterg101/openeo)](https://github.com/Peterg101/openeo/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/minceheid/openeo)](https://github.com/minceheid/openeo)
-[![GitHub forks](https://img.shields.io/github/forks/minceheid/openeo)](https://github.com/minceheid/openeo/network)
+[![GitHub stars](https://img.shields.io/github/stars/Peterg101/openeo)](https://github.com/Peterg101/openeo)
+[![GitHub forks](https://img.shields.io/github/forks/Peterg101/openeo)](https://github.com/Peterg101/openeo/network)
 
 EO Charging announced in July 2025 that their EO Smart Home app will be discontinued on November 30th, 2025. This would disable the ability for owners to set automated timed schedules and to directly manage their device, leaving chargers operating purely as basic "plug & play" units.
 
@@ -81,6 +81,8 @@ This project is compatible with:
 ## 🚀 Installation
 
 ### Prerequisites
+> **Security-hardened fork.** See [SECURITY.md](SECURITY.md) for what differs from upstream.
+
 - EO Smart Home Hub/Mini or Mini Pro 2 device
 - Micro SD card (8GB or larger, Class 10 recommended)
 - WiFi network with internet connectivity
@@ -93,41 +95,50 @@ This project is compatible with:
 
 2. **Download SD Image**
 
-   [![Download SD Image](https://img.shields.io/badge/download-SD%20image-blue)](https://github.com/minceheid/openeo/releases/latest/download/openeo_latest.img.xz) 
-   [![SHA256](https://img.shields.io/badge/checksum-sha256-lightgrey)](https://github.com/minceheid/openeo/releases/latest/download/openeo_latest.img.xz.sha256)
+   [![Download SD Image](https://img.shields.io/badge/download-SD%20image-blue)](https://github.com/Peterg101/openeo/releases/latest/download/openeo_latest.img.xz) 
+   [![SHA256](https://img.shields.io/badge/checksum-sha256-lightgrey)](https://github.com/Peterg101/openeo/releases/latest/download/openeo_latest.img.xz.sha256)
 
 3. **Write Image to SD Card**
    - Download [Raspberry Pi Imager](https://www.raspberrypi.com/software/) or similar tool
    - Write the OpenEO image to your SD card
    - **Important**: Do not change the default username (`pi`) - the installation requires it
 
-4. **Safely Power Down Your Charger**
+4. **Fill in `openeo-setup.txt` (new - required)**
+   - Before ejecting the SD card, open its **boot** partition (called `bootfs` on a Mac) and edit `openeo-setup.txt` in a plain-text editor:
+     ```
+     hotspot_password=<8-63 characters, for the OpenEO setup Wi-Fi>
+     admin_password=<at least 8 characters, for logging in to the web UI>
+     force_portal=no
+     ```
+   - On first boot the Pi reads these once, stores the hotspot password (root-only) and a salted hash of the admin password, then **blanks the plain-text values** in the file.
+   - If you skip this the setup hotspot will not start and the web UI refuses all logins ("No admin password set - edit openeo-setup.txt on the SD card"). Eject, edit the file again and reboot to fix it.
+
+5. **Safely Power Down Your Charger**
    - Disconnect power by switching off the relevant breaker in your consumer unit
    - Ensure the device is completely powered down
 
-5. **Install Raspberry Pi**
+6. **Install Raspberry Pi**
    - Open the EO enclosure by loosening the four captive screws on the front
    - Remove any rubber covers if present
    - Install the SD card into the Raspberry Pi
    - Secure the cable connection between Raspberry Pi and power board
 
-6. **Boot**
+7. **Boot**
    - Close the enclosure and apply power
    - The Raspberry Pi should boot
 
-7. **Access Configuration Portal**
-   - Look for "OpenEO" wireless network on your phone/tablet
-   - Connect to it
-   - Your browser should auto-redirect to the configuration interface
-   - If not, navigate to `192.168.1.1`
+8. **Join the setup hotspot (only if the Pi has no Wi-Fi saved yet)**
+   - Look for the **"OpenEO"** wireless network on your phone/tablet and join it with your `hotspot_password` (the network is WPA2-protected)
+   - Your browser should auto-redirect to the configuration portal; if not, navigate to `http://192.168.4.1`
+   - The portal only starts when no Wi-Fi client connection is saved on the Pi (or when `force_portal=yes`), and is active for 30 minutes
 <p align="center">
 <img src="https://github.com/user-attachments/assets/f9470a6f-b815-4cda-ac31-8901c7547a36" style="width:25%; height:auto;" />
 </p>
 
-8. **Complete Setup**
+9. **Complete Setup in the portal**
    - Configure your home WiFi network
    - Set timezone for your installation
-   - Optionally add SSH key for command-line access - the following openssh key types are accepted:
+   - Optionally add SSH key for command-line access (a single-line OpenSSH public key) - the following openssh key types are accepted:
 
 | Key type | Accepted prefix | Notes |
 |---|---|---|
@@ -138,14 +149,12 @@ This project is compatible with:
 | FIDO/U2F Ed25519 | `sk-ssh-ed25519@openssh.com` | Security-key-backed Ed25519 |
 | RSA | `ssh-rsa` | Standard RSA public-key format |
 
-   - **Note**: Configuration portal is active for 30 minutes after every reboot and once WiFi is configured can also be accessed via `http://<charger-ip>:81/`
-   
+   - **Re-running setup later**: set `force_portal=yes` in `openeo-setup.txt` (SD card) and reboot. Set it back to `no` afterwards.
 
-9. **Access Main Interface**
-   - Disconnect from OpenEO network and reconnect to your home WiFi
-   - Access the dashboard at `http://openeo.local/` or `http://<charger-ip>/`
-
-
+10. **Log in to the main interface**
+   - Disconnect from the OpenEO network and reconnect to your home WiFi
+   - Open `http://openeo.local/` or `http://<charger-ip>/` and log in as **admin** with your `admin_password`
+   - Change the password any time in **Settings -> Security**; sessions last 12 hours idle / 30 days maximum
 
 ---
 
@@ -239,14 +248,17 @@ Fine-tune current transformer readings (recommended from tablet/laptop):
 
 ## 🔌 Integration with Home Automation
 
+Every endpoint requires a login. For machine access, `/api` and `/metrics` (only) also accept
+`Authorization: Bearer <api token>`. Generate the token in **Settings -> Security** (it is shown once and stored hashed; off until generated).
+
 ### Home Assistant
 Export charger data for Home Assistant integration:
-- Endpoint: `http://<charger-ip>/api`
+- Endpoint: `http://<charger-ip>/api` with the bearer token header
 - Provides current charger state, power metrics, and session data
 
 ### Prometheus
 Export metrics in Prometheus format for time-series monitoring:
-- Endpoint: `http://<charger-ip>/metrics`
+- Endpoint: `http://<charger-ip>/metrics` (set `authorization: {credentials: <token>}` in the scrape config)
 - Includes all operational metrics for visualization in Grafana or similar
 
 ---
@@ -259,9 +271,13 @@ OpenEO checks for new releases periodically and displays update availability on 
 1. Click the update notification on the home page
 2. Follow the on-screen instructions
 
+Updates come from this fork, [Peterg101/openeo](https://github.com/Peterg101/openeo).
+
 ### Update via Command Line
+Download the updater to a file, read it if you like, then run it (it is deliberately not piped into the interpreter):
 ```bash
-curl -sSL https://github.com/minceheid/openeo/raw/refs/heads/main/openeo_download.py | python3 -
+curl -sSL -o /tmp/openeo_download.py https://github.com/Peterg101/openeo/raw/refs/heads/main/openeo_download.py
+python3 /tmp/openeo_download.py
 sudo reboot
 ```
 
@@ -281,6 +297,8 @@ Access your charger from anywhere via secure encrypted connection.
 6. Set "Enable Module" to "Yes" in the OpenEO Cloud settings on your charger
 7. Paste token into OpenEO Cloud settings on your charger
 8. The connection indicator on openeo.uk should turn green when charger connects
+
+**Security**: the module is off by default. The connection verifies the cloud server's certificate (pinned, see [SECURITY.md](SECURITY.md)) and the cloud can only reach the local web UI.
 
 **Pricing**: 14 days free usage on first login, then subscription required
 
@@ -327,18 +345,17 @@ The Config Server provides a comprehensive REST API for:
 
 **Quick API Examples**:
 ```bash
-# Get current charger status
-curl http://openeo.local/getstatus | jq .
+# Metrics / status with an API token (Settings -> Security)
+curl -H "Authorization: Bearer $OPENEO_TOKEN" http://openeo.local/metrics
+curl -H "Authorization: Bearer $OPENEO_TOKEN" http://openeo.local/api | jq .
 
-# Retrieve Prometheus metrics
-curl http://openeo.local/metrics
+# Everything else needs a session: log in, keep the cookie
+curl -c jar -H 'Content-Type: application/json' -d '{"password":"..."}' http://openeo.local/login
+curl -b jar http://openeo.local/getstatus | jq .
 
-# Get Home Assistant compatible data
-curl http://openeo.local/api | jq .
-
-# Update charging settings
-curl -X POST http://openeo.local/setsettings \
-  -d 'chargeroptions:max_current=20'
+# Update charging settings (JSON, only known module:key pairs)
+curl -b jar -X POST http://openeo.local/setsettings \
+  -H 'Content-Type: application/json' -d '{"chargeroptions:overall_limit_current": 20}'
 ```
 
 ### Contributing Code
@@ -378,7 +395,7 @@ Normal during initial boot—software is establishing communication with charger
 ## 💚 Support & Contribution
 
 ### Reporting Issues
-Found a bug? Have a feature request? [Open an issue](https://github.com/minceheid/openeo/issues) on GitHub.
+Found a bug? Have a feature request? [Open an issue](https://github.com/Peterg101/openeo/issues) on GitHub.
 
 ### Contributing Code
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on submitting pull requests.
@@ -409,13 +426,13 @@ Copyright © 2025 Mike Scott and contributors
 
 ## 📚 Additional Resources
 
-- [GitHub Repository](https://github.com/minceheid/openeo)
-- [Releases Page](https://github.com/minceheid/openeo/releases)
-- [Issues Tracker](https://github.com/minceheid/openeo/issues)
-- [Discussions](https://github.com/minceheid/openeo/discussions)
+- [GitHub Repository](https://github.com/Peterg101/openeo)
+- [Releases Page](https://github.com/Peterg101/openeo/releases)
+- [Issues Tracker](https://github.com/Peterg101/openeo/issues)
+- [Discussions](https://github.com/Peterg101/openeo/discussions)
 - [OpenEO Cloud Service](https://openeo.uk)
 - [API Documentation](docs/API.md)
 
 ---
 
-**Questions?** Check the [Issues](https://github.com/minceheid/openeo/issues) section or start a [Discussion](https://github.com/minceheid/openeo/discussions).
+**Questions?** Check the [Issues](https://github.com/Peterg101/openeo/issues) section or start a [Discussion](https://github.com/Peterg101/openeo/discussions).

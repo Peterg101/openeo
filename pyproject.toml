@@ -1,0 +1,49 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.coverage.run]
+branch = true
+source = ["lib", "portal", "openeoConfig", "util", "openeo_download"]
+omit = [
+    "tests/*",
+    "*/node_modules/*",
+    "openeo-ui/*",
+    "lib/configserver/*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+# Global floor; the per-module floors below are enforced by tests/check_coverage.py
+fail_under = 60
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+]
+
+# Per-module line+branch coverage floors (percent), enforced in CI by
+#   python tests/check_coverage.py
+[tool.openeo.coverage_thresholds]
+"lib/webapp/app.py" = 90
+"lib/webapp/authstore.py" = 90
+"lib/webapp/csrf.py" = 90
+"lib/webapp/deps.py" = 90
+"lib/webapp/loginpage.py" = 90
+"lib/webapp/passwords.py" = 90
+"lib/webapp/secret_keys.py" = 90
+"lib/webapp/sessions.py" = 90
+"lib/webapp/settings_validation.py" = 90
+"lib/webapp/staticfiles.py" = 90
+"lib/cloudpath.py" = 90
+"lib/cloud_tls.py" = 90
+"portal/setupfile.py" = 90
+"portal/portal.py" = 90
+"lib/scheduler.py" = 70
+"lib/loadmanagement.py" = 70
+"lib/switch.py" = 70
+"lib/chargersession.py" = 70
+"lib/chargeroptions.py" = 70
+"openeoConfig.py" = 70
+"util.py" = 70
