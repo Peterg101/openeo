@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { buildUrl } from './utils/funcs';
+import { buildUrl, apiFetch } from "./utils/funcs";
 import { globalCss,styles } from './utils/styles';
 import { useToastContext } from "./openeo-Toast";
 
@@ -22,7 +22,7 @@ export default function Update({ status = {} }) {
 
     
   const fetchVersionInfo = () => {
-    fetch(buildUrl("getstatus"))
+    apiFetch(buildUrl("getstatus"))
       .then((r) => r.json())
       .then((data) => {
         setVersionInfo({
@@ -36,7 +36,7 @@ export default function Update({ status = {} }) {
   };
 
   const refreshStatus = () => {
-    fetch(buildUrl("update"), {
+    apiFetch(buildUrl("update"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "status" }),
@@ -72,7 +72,7 @@ export default function Update({ status = {} }) {
       window.location.href = "/";
     }
 
-    fetch(buildUrl("update"), {
+    apiFetch(buildUrl("update"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: actionType }),

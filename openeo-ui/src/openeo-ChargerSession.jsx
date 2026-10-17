@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, Fragment } from "react";
-import { buildUrl, getCurrencyConfig } from './utils/funcs';
+import { buildUrl, apiFetch, getCurrencyConfig } from './utils/funcs';
 import { globalCss, styles } from './utils/styles';
 import SessionTable from './ChargerSession/SessionTable';
 import processSessionData from './ChargerSession/ProcessData';
@@ -429,7 +429,7 @@ export default function ChargerSession() {
   }, []);
 
   useEffect(() => {
-    fetch(buildUrl("getsessiondata"), { method: "GET" })
+    apiFetch(buildUrl("getsessiondata"), { method: "GET" })
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();

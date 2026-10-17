@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
+import { logout } from "./utils/funcs";
 
 export default function AppMenu({ links = [] }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -57,6 +58,9 @@ export default function AppMenu({ links = [] }) {
               {link.label}
             </Link> 
           ))}
+          <button className="px-6 py-4 text-left hover:bg-white/10 transition" onClick={logout}>
+            Log out
+          </button>
         </nav>
       </div>
     </>

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState,useCallback } from "react";
-import { buildUrl } from './utils/funcs';
+import { buildUrl, apiFetch, postJson } from "./utils/funcs";
 import { globalCss,styles } from './utils/styles';
 import { useToastContext } from "./openeo-Toast";
 
@@ -116,7 +116,7 @@ export default function Calibration() {
     if (!plotly || !chartData.length) return;
 
     const maxTime = chartData[0].x_orig[chartData[0].x.length - 1];
-    fetch(buildUrl(url + "&since=" + maxTime), { method: "GET" })
+    apiFetch(buildUrl(url + "&since=" + maxTime), { method: "GET" })
       .then((r) => r.json())
       .then((data) => {
 
@@ -157,7 +157,7 @@ export default function Calibration() {
     script.onload = () => {
       plotlyRef.current = window.Plotly;
     
-      fetch(buildUrl("getconfig"))
+      apiFetch(buildUrl("getconfig"))
         .then((r) => r.json())
         .then((config) => {
             const newCalibrations = {
@@ -178,7 +178,7 @@ export default function Calibration() {
             setCalibrations(newCalibrations);
 
             // Now get initial data
-            fetch(buildUrl(url), { method: "GET" })
+            apiFetch(buildUrl(url), { method: "GET" })
               .then((r) => r.json())
               .then((data) => {
                 let trimmedData = data.map(trace => ({
@@ -234,11 +234,7 @@ export default function Calibration() {
     };
 
     try {
-      const res = await fetch(buildUrl("setsettings"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: new URLSearchParams(params),
-      });
+      const res = await postJson(buildUrl("setsettings"), params);
 
       if (!res.ok) throw new Error("Server error");
 
