@@ -13,6 +13,7 @@ import json
 from urllib.request import urlopen
 
 from lib.PluginSuperClass import PluginSuperClass
+from openeo_download import GITHUB_REPO
 
 
 
@@ -22,7 +23,7 @@ _LOGGER = logging.getLogger(__name__)
 #################################################################################
 class checkversionClassPlugin(PluginSuperClass):
     PRETTY_NAME = "CheckVersion"
-    GITHUB_REPO = "minceheid/openeo"
+    GITHUB_REPO = GITHUB_REPO   # shared constant, defined once in openeo_download.py
 
     CORE_PLUGIN = True  
     pollfrequency = 12 * 60 * 24 * 7  # Check version once a week 
