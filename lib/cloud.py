@@ -5,22 +5,20 @@ OpenEO Module: Cloud Proxy Server
 
 """
 #################################################################################
+from __future__ import annotations
+
 import logging, threading, socket, ssl
-import urllib.request, urllib.error, re, time
+import time
+from typing import Any
 import globalState, util
 from lib.PluginSuperClass import PluginSuperClass
-from lib import cloud_tls, cloudpath, internal_auth
+from lib import cloud_tls, cloudproxy
 
 # logging for use in this module
 _LOGGER = logging.getLogger(__name__)
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Never follow redirects: the proxy must not be led off the local web UI."""
-    def redirect_request(self, *args, **kwargs):
-        return None
-
-_OPENER = urllib.request.build_opener(_NoRedirect)
+_OPENER = cloudproxy.build_default_opener()
 
 #################################################################################
 class cloudClassPlugin(PluginSuperClass):
@@ -34,14 +32,14 @@ class cloudClassPlugin(PluginSuperClass):
                         "port":         {"type": "int","default":8381}
                         }
 
-    proxythread=None
-    failurecount=0
-    looptime=15
-    maxfailurecount=int((24*60*60)/looptime) # about 24h
-    ssl_sock=None
+    proxythread: threading.Thread | None = None
+    failurecount: int = 0
+    looptime: int = 15
+    maxfailurecount: int = int((24*60*60)/looptime) # about 24h
+    ssl_sock: Any = None
 
 
-    def poll(self):
+    def poll(self) -> int:
 
         # Have we had too many failures? - if so, we should probably autodisable
         if self.failurecount>self.maxfailurecount:
@@ -60,23 +58,23 @@ class cloudClassPlugin(PluginSuperClass):
 
         return(0)
 
-    def configure(self,configParam):
+    def configure(self, configParam: Any) -> None:
         # Run a poll(), just in case we have been switched on or off
         super().configure(configParam)
         self.failurecount=0
         self.poll()
 
-    def _thread_start(self):
+    def _thread_start(self) -> None:
         _LOGGER.info(f"Starting OpenEO Cload thread")
         self.proxythread = threading.Thread(target=self._proxythread, name='_proxythread', daemon=True)
         self.proxythread.start()
 
-    def _thread_stop(self):
+    def _thread_stop(self) -> None:
         _LOGGER.info(f"Stopping OpenEO Cload thread")
         self.killflag=True
 
 
-    def _proxythread(self):
+    def _proxythread(self) -> None:
         """Connect to a TCP socket with AUTH handshake and receive commands."""
 
         while self.pluginConfig["enabled"]:
@@ -100,7 +98,7 @@ class cloudClassPlugin(PluginSuperClass):
 
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-                s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
+                s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)  # type: ignore[attr-defined,unused-ignore]
                 s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
                 s.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5)
 
@@ -169,59 +167,22 @@ class cloudClassPlugin(PluginSuperClass):
 
 
     @staticmethod
-    def _local_port():
+    def _local_port() -> int:
         """Port the local web UI listens on."""
         try:
             return int(globalState.stateDict["_moduleDict"]["configserver"].pluginConfig["port"])
         except Exception:
             return 80
 
-    def get_output(self,command):
-
-        returnval={}
-        returnval["headers"]=[]
-        returnval["body"]=b""
-        returnval["bodylen"]=0
-
-        m = re.search('^(GET|POST) ([^ ]+) ?(.*)$', command)
-
-        if not m:
-            _LOGGER.error("OpenEO Cloud error: Malformed command")
-            return(returnval)
-
-        method=m.group(1)
-
-        # Security: the cloud may only ever reach the local web UI. The path is
-        # validated and the URL is built from a fixed loopback authority.
-        try:
-            URL=cloudpath.build_proxy_url(m.group(2), self._local_port())
-        except ValueError as e:
-            _LOGGER.error("OpenEO Cloud error: refused to proxy path (%s)" % e)
-            return(returnval)
-
-        # Proxied requests authenticate with the per-process internal token.
-        headers={internal_auth.HEADER: internal_auth.TOKEN}
-        data=None
-        if method=="POST":
-            data=m.group(3).encode('utf-8')
-            headers["Content-Type"]="application/json"
-
-        request=urllib.request.Request(URL, data=data, headers=headers, method=method)
-        try:
-            response = _OPENER.open(request, timeout=30)
-        except urllib.error.HTTPError as e:
-            # HTTPError is itself a response (status, headers, body)
-            response = e
-        returnval["headers"]=response.getheaders()
-        returnval["body"] = response.read()
-
-        returnval["bodylen"]=len(returnval["body"])
-        return(returnval)
+    def get_output(self, command: str) -> dict[str, Any]:
+        """Proxy one cloud command to the local web UI (see lib/cloudproxy.py)."""
+        result = cloudproxy.proxy_request(command, self._local_port(), _OPENER)
+        return {"headers": result.headers, "body": result.body, "bodylen": result.bodylen}
 
     # def get_user_settings(self):
     #     settings = []
     #     util.add_simple_setting(self.pluginConfig, settings, 'textinput', "cloud", ("authtoken",), f'Authorisation Code (Charger ID: {globalState.stateDict["eo_serial_number"]})',pattern='([A-Za-z0-9]{5})')
     #     return settings
 
-    def get_user_settings(self):
+    def get_user_settings(self) -> list[dict[str, Any]]:
         return [{"type": "textinput", "name": "authtoken", "label": f'Authorisation Code (Charger ID: {globalState.stateDict["eo_serial_number"]})', "default":self.pluginConfig.get("authtoken",False), "pattern":'([A-Za-z0-9]{5})', "note":""}];
