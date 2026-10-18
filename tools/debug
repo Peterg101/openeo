@@ -40,6 +40,9 @@ for table in tables:
     cursor.execute(f"SELECT * FROM {table[0]}")
     rows = cursor.fetchall()
     for row in rows:
+        # never include secrets or private keys (password hashes, tokens) in the report
+        if row[1].startswith("_") or row[1] in ("mqtt_password", "authtoken", "password", "api_token", "secret"):
+            row = (row[0], row[1], "********") + tuple(row[3:])
         print(row)
 
 cursor.execute(f"SELECT timestamp, message FROM log")

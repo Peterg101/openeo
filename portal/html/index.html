@@ -431,7 +431,11 @@
     }
     msg.textContent = "Connecting.. Refreshing page..";
     try {
-      await fetch(`/api/set_wifi?ssid=${encodeURIComponent(selectedSSID)}&password=${encodeURIComponent(password)}`);
+      await fetch("/api/set_wifi", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ssid: selectedSSID, password })
+      });
       await new Promise(r => setTimeout(r, 5000));
       location.reload();
     } catch (err) {
@@ -456,7 +460,11 @@
     msg.style.color = "#e0e0e0";
 
     try {
-      const res = await fetch(`/api/set_timezone?timezone=${encodeURIComponent(selectedTimezone)}`);
+      const res = await fetch("/api/set_timezone", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ timezone: selectedTimezone })
+      });
       const result = await res.json();
 
       if (result.error) {
@@ -487,8 +495,8 @@
     try {
       const res = await fetch("/api/set_ssh", {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ key })
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key })
       });
       msg.textContent = res.status == 200 ? "SSH key applied." : "Update Error - Invalid Key?";
       msg.style.color = res.status == 200 ? "#4caf50" : "#f44336";

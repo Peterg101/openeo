@@ -8,6 +8,7 @@ import sqlite3,logging,json,os,time,re,numbers,datetime
 from threading import Lock
 from pwd import getpwnam
 from grp import getgrnam
+from lib.webapp.secret_keys import mask_value
 
 # logging for use in this module
 _LOGGER = logging.getLogger(__name__)
@@ -149,14 +150,16 @@ class openeoConfigClass:
 
             self.conn.commit()
 
+        # Don't write any keys prefixed by underscore to the log, and never write
+        # the value of a secret (passwords, tokens) to it - the log is exposed
+        # through /debugdata and the debug report.
         if isinstance(key_or_dict, dict):
             for key, value in key_or_dict.items():
-                # Don't write any keys prefixed by underscore to the log
                 if key[0]!="_":
-                    self.logwrite(f"Config update {module}:{key}={value}")
+                    self.logwrite(f"Config update {module}:{key}={mask_value(key, value)}")
         else:
             if key_or_dict[0]!="_":
-                self.logwrite(f"Config update {module}:{key_or_dict}={value}")
+                self.logwrite(f"Config update {module}:{key_or_dict}={mask_value(key_or_dict, value)}")
 
 
     def __init__(self,defaultConfig=None):
@@ -241,7 +244,7 @@ class openeoConfigClass:
                     initial_config = json.load(f)
                     for module, entries in initial_config.items():
                         for key, value in entries.items():
-                            _LOGGER.info(f"applying configuration from {self.JSON_FILE} for {module}: {key} = {value}")
+                            _LOGGER.info(f"applying configuration from {self.JSON_FILE} for {module}: {key} = {mask_value(key, value)}")
                             self.set(module, key, value)
                 # Rename the JSON file to prevent reloading it in the future
                 os.rename(self.JSON_FILE, self.JSON_FILE + "_loaded")

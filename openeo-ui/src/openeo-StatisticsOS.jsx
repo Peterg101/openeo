@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from "react";
-import { buildUrl } from './utils/funcs';
+import { buildUrl, apiFetch } from "./utils/funcs";
 import { globalCss,styles } from './utils/styles';
 
 export default function StatisticsOS() {
@@ -91,7 +91,7 @@ export default function StatisticsOS() {
     if (!plotly || !chartData.length) return;
 
     const maxTime = chartData[0].x[chartData[0].x.length - 1];
-    fetch(buildUrl(url + "&since=" + maxTime), { method: "GET" })
+    apiFetch(buildUrl(url + "&since=" + maxTime), { method: "GET" })
       .then((r) => r.json())
       .then((data) => {
         data.forEach((series, i) => {
@@ -123,7 +123,7 @@ export default function StatisticsOS() {
     script.onload = () => {
       plotlyRef.current = window.Plotly; // Plotly is global
 
-      fetch(buildUrl(url), { method: "GET" })
+      apiFetch(buildUrl(url), { method: "GET" })
         .then((r) => r.json())
         .then((data) => {
           processData(data);

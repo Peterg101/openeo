@@ -1,0 +1,5 @@
+# OpenEO first-boot setup. Fill these in, save, eject, then boot the Pi.
+# The Pi reads them once and then removes the plain-text values from this file.
+hotspot_password=
+admin_password=
+force_portal=no

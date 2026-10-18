@@ -1,20 +1,51 @@
 export function buildUrl(path) {
-  // Detects if Vite is being used by checking the DEV environment variable. 
-  // If it is, it assumes that the backend is running on a different host 
-  // and constructs the URL accordingly. Otherwise, it returns the path as is, 
-  // which would work in a production environment where the frontend and 
-  // backend are served from the same origin.
-
-  const isVite = !!import.meta.env.DEV;
-  
-  if (isVite) {
-    console.log("UI dev mode enabled",isVite,path);
-    return `http://192.168.123.50/${path}`;
-  } else {
-    console.log("URL:",path);
-  }
-  
+  // In production the UI and the API share an origin, so paths are used as-is.
+  // In `vite dev` the dev server proxies the API paths to the charger (see
+  // vite.config.js), so the browser still only ever talks to one origin and the
+  // session cookie / same-origin checks behave exactly as on the Pi.
   return path;
+}
+
+export const LOGIN_URL = "/login";
+
+let redirecting = false;
+
+/**
+ * fetch() wrapper for every call to the charger:
+ *  - sends the session cookie (same-origin),
+ *  - on HTTP 401 (not logged in / session expired) sends the browser to the login page.
+ */
+export async function apiFetch(url, options = {}) {
+  const response = await fetch(url, { credentials: "same-origin", ...options });
+  if (response.status === 401 && !redirecting) {
+    redirecting = true;
+    window.location.assign(LOGIN_URL);
+  }
+  return response;
+}
+
+/** POST a JSON body (the server rejects every other content type). */
+export function postJson(url, body = {}, options = {}) {
+  return apiFetch(url, {
+    ...options,
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Log out the current browser session and go to the login page. */
+export async function logout() {
+  try {
+    await postJson(buildUrl("logout"));
+  } finally {
+    window.location.assign(LOGIN_URL);
+  }
+}
+
+/** Test hook: allow another redirect after a test has triggered one. */
+export function _resetRedirectGuard() {
+  redirecting = false;
 }
 
 export function getCurrencyConfig() {

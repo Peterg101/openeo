@@ -28,7 +28,7 @@ fi
 
 # Install prereq packages
 $SUDO apt-get update
-$SUDO apt-get install -y python3-serial python3-websockets python3-jsonschema python3-psutil python3-paho-mqtt dnsmasq iptables 
+$SUDO apt-get install -y python3-serial python3-websockets python3-jsonschema python3-psutil python3-paho-mqtt python3-fastapi python3-uvicorn dnsmasq iptables 
 
 OSVERSION=$(awk -F= '($1=="VERSION_ID") {print $2}' /etc/os-release |sed 's/"//g')
 if [ "$OSVERSION" -ge 12 ]; then
@@ -73,7 +73,14 @@ echo ">> Enabling services..."
 $SUDO systemctl daemon-reload
 $SUDO systemctl enable openeo
 $SUDO systemctl force-reload systemd-journald
-$SUDO systemctl enable dnsmasq
+# dnsmasq is started and stopped by the portal script, and only when the setup access
+# point is up - it must not run (or fail to bind wlan1) on every boot.
+$SUDO systemctl disable dnsmasq
+# The first-boot step applies openeo-setup.txt (hotspot + admin passwords) before openeo and
+# the portal start. The portal gates itself (no saved Wi-Fi, or force_portal=yes), so
+# enabling it on every update is safe.
+$SUDO install -d -m 700 -o root -g root /etc/openeo
+$SUDO systemctl enable openeo_firstboot
 $SUDO systemctl enable openeo_portal
 
 if [ ! -z "$SUDO" ]; then

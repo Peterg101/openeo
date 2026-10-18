@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { buildUrl } from './utils/funcs';
+import { buildUrl, apiFetch, postJson } from "./utils/funcs";
 import { globalCss,styles } from './utils/styles';
 import { useToastContext } from "./openeo-Toast";
 
 import TariffInput from "./SettingsForm/TariffInput";
+import Security from "./openeo-Security";
 
 
 function initFormData(schema) {
@@ -204,7 +205,7 @@ export default function SettingsForm() {
   const [status, setStatus] = useState("loading"); // loading | ready | error
 
   useEffect(() => {
-    fetch(buildUrl("get_user_settings"), { method: "GET" })
+    apiFetch(buildUrl("get_user_settings"), { method: "GET" })
       .then((res) => {
         if (!res.ok) throw new Error("Network error");
         return res.json();
@@ -228,12 +229,7 @@ export default function SettingsForm() {
     formDataCopy["chargersession:tariff"] = JSON.stringify(formData["chargersession:tariff"]);
     console.log("Saving settings:", formDataCopy);
 
-    const response = fetch(buildUrl("setsettings"),
-      {
-        method: "POST",
-        headers: {"Content-Type": "application/x-www-form-urlencoded"},
-        body: new URLSearchParams(formDataCopy).toString(),
-      })
+    const response = postJson(buildUrl("setsettings"), formDataCopy)
       .then(response => {  
         console.log(response);
         if (!response.ok) {
@@ -245,7 +241,7 @@ export default function SettingsForm() {
       })
   }
   function handleRestart() {
-    fetch(buildUrl("restart")).then(() => {});
+    postJson(buildUrl("restart")).then(() => {});
     addToast({ type: "success", title: "Restarting", message: "Waiting for openeo to restart..." });
     window.setTimeout(() => { location.reload();}, 7000); // 7 seconds, by experimenting, is enough.
   }
@@ -306,6 +302,7 @@ export default function SettingsForm() {
               Restart OpenEO
             </button>
           </div>
+          <Security />
         </>
       )}
     </div>

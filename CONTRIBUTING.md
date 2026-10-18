@@ -7,7 +7,7 @@ TBD
 To trigger a build that creates and attaches a zip file of the repository to a GitHub Release, follow these steps:
 
 1. Ensure all your changes are committed and pushed to the main branch (or the branch you want to release).
-2. Go to the [Releases](https://github.com/minceheid/openeo/releases) page of this repository.
+2. Go to the [Releases](https://github.com/Peterg101/openeo/releases) page of this repository.
 3. Click on "Draft a new release".
 4. Fill in the tag version (e.g., `v1.2.3`), release title, and description as needed.
 5. Click "Publish release".

@@ -1,437 +1,462 @@
 #!/usr/bin/env python3
+"""OpenEO Wi-Fi setup portal.
 
-import http.server
-import socketserver
-import urllib.parse
-import os
-import threading
-import time
+Security properties (see SECURITY.md):
+  * Only starts when the Pi has no saved Wi-Fi client connection, or when the setup
+    file says force_portal=yes, AND a valid hotspot password is stored.
+  * The access point is WPA2-PSK; the HTTP server binds the AP address only.
+  * Runs as the unprivileged `pi` user; privileged steps go through sudo.
+  * Every state-changing call is POST with a JSON body from the same origin.
+
+Handlers are plain functions taking the parsed request and an injectable
+subprocess runner, so they can be tested without a Pi.
+"""
+from __future__ import annotations
+
 import argparse
-import pwd
-import sys
+import http.server
 import json
-import subprocess
+import os
+import re
+import signal
 import socket
-import fcntl,struct,re
-from urllib.parse import parse_qs
+import socketserver
+import struct
+import subprocess
+import sys
+import threading
+import urllib.parse
+from collections.abc import Callable, Sequence
+from typing import Any, Protocol, TypeGuard
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, ".."))
+import setupfile  # noqa: E402
+from lib.webapp.csrf import is_json_content_type, origin_allowed  # noqa: E402
+
+BIND_ADDRESS: str = "192.168.4.1"      # the AP address - never 0.0.0.0
+PORT: int = 81
+DEFAULT_TIMEOUT: int = 30 * 60
+CONNECTION_NAME: str = "custom-wifi"
+AP_CONNECTION_NAME: str = "openeo-AP"
+WIFI_INTERFACE: str = "wlan0"
+SSH_DIR: str = "/home/pi/.ssh"
+AUTH_KEYS_FILE: str = os.path.join(SSH_DIR, "authorized_keys")
+PORTAL_SCRIPT: str = os.path.join(HERE, "tools", "openeo_portal.bash")
+MAX_BODY: int = 16 * 1024
+
+shutdown_event: threading.Event = threading.Event()
 
 
-PORT = 81
-DEFAULT_TIMEOUT = 30*60
-CONNECTION_NAME = "custom-wifi"
-WIFI_INTERFACE = "wlan0"
-DRYRUN=False
-SSH_DIR="/home/pi/.ssh"
-auth_keys_file = os.path.join(SSH_DIR, "authorized_keys")
+class RunResult(Protocol):
+    returncode: int
+    stdout: Any
+    stderr: Any
 
 
-shutdown_event = threading.Event()
-start_time = time.time()
+class Runner(Protocol):
+    """subprocess.run-compatible callable (argv list in, never a shell string)."""
+
+    def __call__(self, argv: Sequence[str], **kwargs: Any) -> RunResult: ...
+
+
+class Headers(Protocol):
+    """Read access to request headers (http.client.HTTPMessage or a plain dict)."""
+
+    def get(self, name: str, default: Any = None, /) -> Any: ...
+Handler = Callable[[dict[str, Any], Runner], dict[str, Any]]
+
+
+def default_run(argv: Sequence[str], **kwargs: Any) -> RunResult:
+    return subprocess.run(argv, **kwargs)
+
 
 # =========================
-# Startup / Shutdown hooks
+# Start-up decision
 # =========================
 
-def on_startup():
-    print("[STARTUP] Network startup")
-    subprocess.run(['sudo','/home/pi/openeo/portal/tools/openeo_portal.bash', 'start'], check=False)
-    print("[STARTUP] Webserver starting")
+def saved_wifi_client_profiles(run: Runner = default_run) -> list[str] | None:
+    """UUIDs of saved Wi-Fi *client* profiles for wlan0 (excluding the AP profile).
+
+    Returns a list, or None if NetworkManager could not be queried.
+    """
+    listing = run(["sudo", "nmcli", "-t", "-f", "UUID,TYPE", "connection", "show"],
+                  capture_output=True, text=True)
+    if listing.returncode != 0:
+        return None
+    found: list[str] = []
+    for line in listing.stdout.splitlines():
+        uuid, _, kind = line.partition(":")
+        if kind.strip() != "802-11-wireless":
+            continue
+        info = run(["sudo", "nmcli", "-t", "-g",
+                    "connection.id,802-11-wireless.mode,connection.interface-name",
+                    "connection", "show", uuid], capture_output=True, text=True)
+        if info.returncode != 0:
+            continue
+        fields = info.stdout.strip("\n").split("\n")
+        name = fields[0] if fields else ""
+        mode = fields[1] if len(fields) > 1 else ""
+        iface = fields[2] if len(fields) > 2 else ""
+        if name == AP_CONNECTION_NAME or mode == "ap":
+            continue
+        if iface not in ("", WIFI_INTERFACE):
+            continue
+        found.append(uuid)
+    return found
 
 
-def on_shutdown():
-    print("[SHUTDOWN] Network stopping")
-    subprocess.run(['sudo','/home/pi/openeo/portal/tools/openeo_portal.bash', 'stop'], check=False)
-    print("[SHUTDOWN] Webserver stopping")
-
-# =========================
-# API function definitions
-# =========================
-
-def api_get_wifi(params):
-    data=get_wifi_data()
-    data["INTERNET"]=can_access_internet()
-    data["SSH"]=get_ssh_public_key()
-    data["IP"]=get_ip_address(WIFI_INTERFACE)
-    return data
+def read_stored_psk(run: Runner = default_run) -> str | None:
+    """The stored hotspot passphrase if present and valid, else None (read via sudo)."""
+    result = run(["sudo", "cat", setupfile.PSK_FILE], capture_output=True, text=True)
+    if result.returncode != 0:
+        return None
+    psk = result.stdout.rstrip("\n")
+    return psk if setupfile.is_valid_hotspot_psk(psk) else None
 
 
-
-def api_set_wifi(params):
-    ssid = params.get("ssid", [None])
-    password = params.get("password", [None])
-
-    # Input validation
-    if not is_valid_ssid(ssid):
-        return({"error": "Invalid SSID"})
-    if not is_valid_password(password):
-        return({"error": "Invalid Password"})
-
-    connected, message = setup_wifi_connection(ssid, password)
-
-    return({
-        "connected_to_wifi": connected,
-        "nmcli_message": message,
-        "internet_access": can_access_internet()
-    })
+def decide_start(saved_profiles: list[str] | None, force_portal: bool,
+                 psk_valid: bool) -> tuple[bool, str]:
+    """(start?, reason) - the single policy for whether the AP and portal come up."""
+    if not psk_valid:
+        return False, "no valid hotspot password stored (8-63 printable ASCII); set hotspot_password in openeo-setup.txt"
+    if force_portal:
+        return True, "force_portal=yes in openeo-setup.txt"
+    if saved_profiles is None:
+        return False, "could not query NetworkManager for saved Wi-Fi connections"
+    if saved_profiles:
+        return False, "a Wi-Fi connection is already saved; setup portal not needed"
+    return True, "no saved Wi-Fi connection"
 
 
-
-def api_set_ssh(params, post_data):
-    key = post_data.get("key", [None])  # get first element from list
-
-    if is_valid_key(key):
-        # Ensure SSH directory exists
-        if not os.path.isdir(SSH_DIR):
-            os.makedirs(SSH_DIR, mode=0o700, exist_ok=True)
-        os.chmod(SSH_DIR, 0o700)
-
-        # Get uid/gid for pi user
-        try:
-            pi_uid = pwd.getpwnam("pi").pw_uid
-            pi_gid = pwd.getpwnam("pi").pw_gid
-        except KeyError:
-            return {"error": "User 'pi' does not exist"}
-
-        # Set ownership of SSH directory
-        os.chown(SSH_DIR, pi_uid, pi_gid)
-
-        # Write authorized_keys
-        with open(auth_keys_file, "w", encoding="utf-8") as f:
-            f.write(key.rstrip() + "\n")
-        os.chmod(auth_keys_file, 0o600)
-        os.chown(auth_keys_file, pi_uid, pi_gid)
-
-        return get_ssh_public_key()
-    else:
-        return {"error": "Invalid Key"}
-
-
-def api_get_timezones(params):
-    """Return the list of valid timezones and the currently active one."""
+def read_force_portal() -> bool:
+    path = setupfile.find_setup_file()
+    if not path:
+        return False
     try:
-        result = subprocess.run(
-            ['timedatectl', 'list-timezones'],
-            capture_output=True, text=True, check=True
-        )
-        timezones = [tz for tz in result.stdout.splitlines() if tz.strip()]
-        return {
-            "timezones": timezones,
-            "current": get_current_timezone()
-        }
-    except subprocess.CalledProcessError as e:
-        return {"error": f"Failed to list timezones: {e.stderr.strip()}"}
-    except Exception as e:
-        return {"error": str(e)}
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return setupfile.read_force_portal(f.read())
+    except OSError:
+        return False
 
 
-def api_set_timezone(params):
-    """Set the system timezone. Expects ?timezone=Region/City in the query string."""
-    timezone = params.get("timezone", None)
+# =========================
+# Validators
+# =========================
 
-    if not timezone or not isinstance(timezone, str):
-        return {"error": "Missing or invalid 'timezone' parameter"}
+def is_valid_ssid(ssid: object) -> TypeGuard[str]:
+    return (isinstance(ssid, str) and 1 <= len(ssid) <= 32
+            and re.fullmatch(r"[\w \-\.]+", ssid) is not None)
 
-    if not is_valid_timezone(timezone):
-        return {"error": f"Unknown timezone: '{timezone}'"}
 
+def is_valid_password(password: object) -> TypeGuard[str]:
+    """WPA passphrase (8-63 printable ASCII, no spaces) or a 64-digit hex PSK."""
+    if not isinstance(password, str):
+        return False
+    if re.fullmatch(r"[0-9A-Fa-f]{64}", password):
+        return True
+    return re.fullmatch(r"[\x21-\x7E]{8,63}", password) is not None
+
+
+_KEY_RE: re.Pattern[str] = re.compile(
+    r"(ssh-dss AAAAB3NzaC1kc3|ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNT"
+    r"|sk-ecdsa-sha2-nistp256@openssh\.com AAAAInNrLWVjZHNhLXNoYTItbmlzdHAyNTZAb3BlbnNzaC5jb2"
+    r"|ssh-ed25519 AAAAC3NzaC1lZDI1NTE5"
+    r"|sk-ssh-ed25519@openssh\.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29t"
+    r"|ssh-rsa AAAAB3NzaC1yc2)[0-9A-Za-z+/]+={0,3}( [\x20-\x7E]*)?")
+
+
+def is_valid_key(key: object) -> TypeGuard[str]:
+    """A single-line OpenSSH public key. Newlines/control characters are rejected."""
+    return (isinstance(key, str) and len(key) <= 8192
+            and "\n" not in key and "\r" not in key
+            and _KEY_RE.fullmatch(key) is not None)
+
+
+def is_valid_timezone(timezone: str, run: Runner = default_run) -> bool:
     try:
-        if DRYRUN:
-            print(f"api_set_timezone {timezone} - dryrun - not executed")
-            return {"timezone": timezone, "dryrun": True}
-
-        result=subprocess.run(['sudo', 'rm', '-f', '/etc/localtime'])
-        if result.returncode != 0:
-            return {"error": f"rm error: {result.stderr.strip()}"}
-        result=subprocess.run(
-            ["sudo", "tee", "/etc/timezone"],
-            input=timezone + "\n",
-            text=True,
-            check=True
-        )
-        if result.returncode != 0:
-            return {"error": f"tee error: {result.stderr.strip()}"}
-
-        result = subprocess.run(
-            ['sudo', 'dpkg-reconfigure', '-f', 'noninteractive', 'tzdata'],
-            capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            return {"error": f"timedatectl error: {result.stderr.strip()}"}
-
-        return {"timezone": get_current_timezone()}
-
-    except Exception as e:
-        return {"error": str(e)}
+        result = run(["timedatectl", "list-timezones"], capture_output=True, text=True, check=True)
+        return timezone in set(result.stdout.splitlines())
+    except Exception:
+        return False
 
 
 # =========================
-# API supporting functions
+# API handlers: (body dict, run) -> result dict ("error" key = failure)
 # =========================
 
-def get_current_timezone():
-    """Return the currently configured timezone string, or None on failure."""
+def get_current_timezone() -> str | None:
     try:
         with open("/etc/timezone", "r") as f:
-            timezone = f.read().strip()
-        return timezone if timezone else None
+            return f.read().strip() or None
     except Exception:
         return None
 
 
-def is_valid_timezone(timezone):
-    """Check that the given string is present in timedatectl's timezone list."""
-    try:
-        result = subprocess.run(
-            ['timedatectl', 'list-timezones'],
-            capture_output=True, text=True, check=True
-        )
-        valid_timezones = set(result.stdout.splitlines())
-        return timezone in valid_timezones
-    except Exception:
-        return False
-
-
-def get_ip_address(ifname):
+def get_ip_address(ifname: str) -> str | None:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        ip_addr = fcntl.ioctl(
-            s.fileno(),
-            0x8915,  # SIOCGIFADDR
-            struct.pack('256s', ifname[:15].encode('utf-8'))
-        )
-        return socket.inet_ntoa(ip_addr[20:24])
-    except IOError:
+        import fcntl
+        packed = fcntl.ioctl(s.fileno(), 0x8915, struct.pack("256s", ifname[:15].encode("utf-8")))
+        return socket.inet_ntoa(packed[20:24])
+    except (IOError, ImportError):
         return None
+    finally:
+        s.close()
 
-def can_access_internet(host="8.8.8.8", port=53, timeout=3):
-    """
-    Attempts to open a socket to a known public DNS server (Google's 8.8.8.8).
-    Returns True if successful, False otherwise.
-    """
+
+def can_access_internet(host: str = "8.8.8.8", port: int = 53, timeout: float = 3) -> bool:
     try:
-        socket.setdefaulttimeout(timeout)
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.connect((host, port))
-        return True
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
     except Exception:
         return False
 
 
-def get_wifi_data():
-    active_network=""
+def get_ssh_public_key(path: str | None = None) -> str:
+    path = path or AUTH_KEYS_FILE
     try:
-        result = subprocess.run(
-            ['sudo','nmcli', '--get-values=SSID,IN-USE', 'dev', 'wifi', 'list', 'ifname', WIFI_INTERFACE],
-            capture_output=True, text=True, check=True
-        )
-        ssids = []
-        banned_ssids = ["openeo",""]
-        for line in result.stdout.splitlines():
-                row=line.split(':')
-                if row[0] not in ssids and row[0] not in banned_ssids:
-                    ssids.append(row[0])
-                if (row[1]=="*"):
-                    active_network=row[0]
-
-
-
-        return {"SSID": sorted(ssids), "CONNECTED":active_network}
-
-    except subprocess.CalledProcessError as e:
-        return {"error": f"Command failed: {e}"}
-    except Exception as e:
-        return {"error": str(e)}
-
-def get_ssh_public_key():
-    try:
-        with open(auth_keys_file, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return f.readline()
     except FileNotFoundError:
         return ""
     except Exception as e:
-        return f"Error reading file: {e}"
+        return "Error reading file: %s" % e
 
 
-
-def is_valid_ssid(ssid):
-    return (
-        isinstance(ssid, str) and
-        1 <= len(ssid) <= 32 and
-        re.match(r"^[\w\s\-\.]+$", ssid)
-    )
-
-def is_valid_password(password):
-    return (
-        isinstance(password, str) and
-        8 <= len(password) <= 64 and
-        re.match(r"^[\x21-\x7E]+$", password)  # Printable ASCII without spaces
-    )
-
-def setup_wifi_connection(ssid, password):
+def get_wifi_data(run: Runner = default_run) -> dict[str, Any]:
     try:
-        if DRYRUN:
-            print(f"setup_wifi_connection {ssid} {password} - dryrun - not executed\n")
-            return 0
-        
-        # Delete any existing connection with this name
-        subprocess.run(['sudo','nmcli', 'connection', 'delete', CONNECTION_NAME],
-                       check=False)
-
-        # Add new connection profile
-        subprocess.run([
-            'sudo','nmcli', 'connection', 'add',
-            'type', 'wifi',
-            'ifname', WIFI_INTERFACE,
-            'con-name', CONNECTION_NAME,
-            'ssid', ssid
-        ], check=True)
-
-        # Set security and password
-        subprocess.run([
-            'sudo','nmcli', 'connection', 'modify', CONNECTION_NAME,
-            'wifi-sec.key-mgmt', 'wpa-psk',
-            'wifi-sec.psk', password
-        ], check=True)
-
-        # Bring up the connection
-        result = subprocess.run([
-            'sudo','nmcli', 'connection', 'up', CONNECTION_NAME
-        ], capture_output=True, text=True)
-
-        success = result.returncode == 0
-        return success, result.stdout.strip() if success else result.stderr.strip()
-
+        result = run(["sudo", "nmcli", "--get-values=SSID,IN-USE", "dev", "wifi", "list",
+                      "ifname", WIFI_INTERFACE], capture_output=True, text=True, check=True)
+        ssids: list[str] = []
+        active = ""
+        for line in result.stdout.splitlines():
+            row = line.split(":")
+            if row[0] not in ssids and row[0] not in ("openeo", ""):
+                ssids.append(row[0])
+            if len(row) > 1 and row[1] == "*":
+                active = row[0]
+        return {"SSID": sorted(ssids), "CONNECTED": active}
     except subprocess.CalledProcessError as e:
-        return False, f"nmcli error: {e.stderr.strip() if e.stderr else str(e)}"
+        return {"error": "Command failed: %s" % e}
     except Exception as e:
-        return False, f"Exception: {str(e)}"
-    
-def is_valid_key(key):
-    return (
-        isinstance(key, str) and
-        re.match(r"^(ssh-dss AAAAB3NzaC1kc3|ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNT|sk-ecdsa-sha2-nistp256@openssh.com AAAAInNrLWVjZHNhLXNoYTItbmlzdHAyNTZAb3BlbnNzaC5jb2|ssh-ed25519 AAAAC3NzaC1lZDI1NTE5|sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29t|ssh-rsa AAAAB3NzaC1yc2)[0-9A-Za-z+/]+[=]{0,3}(\s.*)?$", key)
-    )
+        return {"error": str(e)}
 
 
-# =========================
-# API whitelist
-# =========================
+def api_get_wifi(body: dict[str, Any], run: Runner = default_run) -> dict[str, Any]:
+    data = get_wifi_data(run)
+    data["INTERNET"] = can_access_internet()
+    data["SSH"] = get_ssh_public_key()
+    data["IP"] = get_ip_address(WIFI_INTERFACE)
+    return data
 
-API_HANDLERS_GET = {
-    "get_wifi": api_get_wifi,
-    "set_wifi": api_set_wifi,
-    "get_timezones": api_get_timezones,
-    "set_timezone": api_set_timezone,
-}
-API_HANDLERS_POST = {
-    "set_ssh": api_set_ssh,
-}
 
-# =========================
-# HTTP Handler
-# =========================
+def setup_wifi_connection(ssid: str, password: str, run: Runner = default_run) -> tuple[bool, str]:
+    try:
+        run(["sudo", "nmcli", "connection", "delete", CONNECTION_NAME], check=False)
+        run(["sudo", "nmcli", "connection", "add", "type", "wifi", "ifname", WIFI_INTERFACE,
+             "con-name", CONNECTION_NAME, "ssid", ssid], check=True)
+        run(["sudo", "nmcli", "connection", "modify", CONNECTION_NAME,
+             "wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.psk", password], check=True)
+        result = run(["sudo", "nmcli", "connection", "up", CONNECTION_NAME],
+                     capture_output=True, text=True)
+        ok = result.returncode == 0
+        return ok, (result.stdout if ok else result.stderr).strip()
+    except subprocess.CalledProcessError as e:
+        return False, "nmcli error: %s" % (e.stderr.strip() if e.stderr else e)
+    except Exception as e:
+        return False, "Exception: %s" % e
+
+
+def api_set_wifi(body: dict[str, Any], run: Runner = default_run) -> dict[str, Any]:
+    ssid, password = body.get("ssid"), body.get("password")
+    if not is_valid_ssid(ssid):
+        return {"error": "Invalid SSID"}
+    if not is_valid_password(password):
+        return {"error": "Invalid Password"}
+    connected, message = setup_wifi_connection(ssid, password, run)
+    return {"connected_to_wifi": connected, "nmcli_message": message,
+            "internet_access": can_access_internet()}
+
+
+def api_get_timezones(body: dict[str, Any], run: Runner = default_run) -> dict[str, Any]:
+    try:
+        result = run(["timedatectl", "list-timezones"], capture_output=True, text=True, check=True)
+        return {"timezones": [t for t in result.stdout.splitlines() if t.strip()],
+                "current": get_current_timezone()}
+    except subprocess.CalledProcessError as e:
+        return {"error": "Failed to list timezones: %s" % (e.stderr or "").strip()}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def api_set_timezone(body: dict[str, Any], run: Runner = default_run) -> dict[str, Any]:
+    timezone = body.get("timezone")
+    if not timezone or not isinstance(timezone, str):
+        return {"error": "Missing or invalid 'timezone' parameter"}
+    if not is_valid_timezone(timezone, run):
+        return {"error": "Unknown timezone: '%s'" % timezone}
+    try:
+        run(["sudo", "rm", "-f", "/etc/localtime"], check=True)
+        run(["sudo", "tee", "/etc/timezone"], input=timezone + "\n", text=True,
+            check=True, stdout=subprocess.DEVNULL)
+        result = run(["sudo", "dpkg-reconfigure", "-f", "noninteractive", "tzdata"],
+                     capture_output=True, text=True)
+        if result.returncode != 0:
+            return {"error": "tzdata error: %s" % result.stderr.strip()}
+        return {"timezone": get_current_timezone()}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def api_set_ssh(body: dict[str, Any], run: Runner = default_run,
+                ssh_dir: str | None = None) -> dict[str, Any]:
+    key = body.get("key")
+    if not is_valid_key(key):
+        return {"error": "Invalid Key"}
+    ssh_dir = ssh_dir or SSH_DIR
+    auth_file = os.path.join(ssh_dir, "authorized_keys")
+    os.makedirs(ssh_dir, mode=0o700, exist_ok=True)
+    os.chmod(ssh_dir, 0o700)
+    tmp = auth_file + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(key + "\n")
+    os.replace(tmp, auth_file)
+    return {"SSH": get_ssh_public_key(auth_file)}
+
+
+API_HANDLERS_GET: dict[str, Handler] = {"get_wifi": api_get_wifi, "get_timezones": api_get_timezones}
+API_HANDLERS_POST: dict[str, Handler] = {"set_wifi": api_set_wifi, "set_timezone": api_set_timezone,
+                     "set_ssh": api_set_ssh}
+
+
+def dispatch(method: str, api_name: str, headers: Headers, raw_body: bytes,
+             run: Runner = default_run) -> tuple[int, dict[str, Any]]:
+    """Pure request handling. Returns (status, json-able payload)."""
+    handlers = API_HANDLERS_POST if method == "POST" else API_HANDLERS_GET
+    if api_name not in handlers:
+        other = API_HANDLERS_GET if method == "POST" else API_HANDLERS_POST
+        if api_name in other:
+            return 405, {"error": "Method not allowed"}
+        return 404, {"error": "Unknown API endpoint"}
+    body: Any = {}
+    if method == "POST":
+        if not origin_allowed(headers.get("Origin"), headers.get("Referer"), headers.get("Host")):
+            return 403, {"error": "Cross-origin request refused"}
+        if not is_json_content_type(headers.get("Content-Type")):
+            return 415, {"error": "Content-Type must be application/json"}
+        try:
+            body = json.loads(raw_body.decode("utf-8") or "{}")
+        except (ValueError, UnicodeDecodeError):
+            return 400, {"error": "Invalid JSON"}
+        if not isinstance(body, dict):
+            return 400, {"error": "JSON object expected"}
+    result = handlers[api_name](body, run)
+    return (500 if "error" in result else 200), result
+
 
 class APIServerHandler(http.server.SimpleHTTPRequestHandler):
     api_prefix = "/api/"
 
-    def do_GET(self):
+    def _api(self, method: str) -> None:
+        name = urllib.parse.urlparse(self.path).path[len(self.api_prefix):].strip("/")
+        raw = b""
+        if method == "POST":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = -1
+            if length < 0 or length > MAX_BODY:
+                self._send(413, {"error": "Body too large"})
+                return
+            raw = self.rfile.read(length)
+        try:
+            status, result = dispatch(method, name, self.headers, raw)
+        except Exception as e:
+            status, result = 500, {"error": str(e)}
+        self._send(status, result)
+
+    def _send(self, status: int, result: Any) -> None:
+        data = json.dumps(result, indent=2).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self) -> None:
         if self.path.startswith(self.api_prefix):
-            self.handle_api(API_HANDLERS_GET)
+            self._api("GET")
         else:
             super().do_GET()
 
-    def do_POST(self):
+    def do_POST(self) -> None:
         if self.path.startswith(self.api_prefix):
-            self.handle_api(API_HANDLERS_POST)
+            self._api("POST")
         else:
-            super().do_POST()
+            self.send_error(404)
 
-    def handle_api(self,API_HANDLERS):
-        parsed = urllib.parse.urlparse(self.path)
-        api_name = parsed.path[len(self.api_prefix):].strip("/")
-        params = urllib.parse.parse_qs(parsed.query)
-        # Flatten params: key -> single value or list
-        params = {k: v[0] if len(v) == 1 else v for k, v in params.items()}
-
-
-
-        if api_name not in API_HANDLERS:
-            self.send_error(404, "Unknown API endpoint")
-            return
-
-        try:
-
-            if self.command=="POST":
-                content_length = int(self.headers['Content-Length'])
-                post_data = self.rfile.read(content_length).decode('utf-8')
-                post_data = urllib.parse.parse_qs(post_data)
-                post_data = {k: v[0] if len(v) == 1 else v for k, v in post_data.items()}
-                result = API_HANDLERS[api_name](params,post_data)
-            else:   
-                result = API_HANDLERS[api_name](params)
-
-            if "error" in result:
-                response = 500
-            else:
-                response = 200
-            print(f"response={response} result={result}")
-            
-            self.send_response(response)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps(result, indent=2).encode())
-
-        except Exception as e:
-            self.send_error(500, str(e))
-
-    def log_message(self, fmt, *args):
-        sys.stdout.write("%s - %s\n" %
-                         (self.client_address[0], fmt % args))
-
-
-# =========================
-# Main
-# =========================
+    def log_message(self, format: str, *args: Any) -> None:
+        sys.stdout.write("%s - %s\n" % (self.client_address[0], format % args))
 
 
 class ThreadedServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
-    """This child class allows us to set the REUSEADDR and REUSEPORT options on the socket
-    which means the Python task can be started and stopped without breaking the config server
-    due to the previous socket being in TIME_WAIT.
-    
-    """
-    def server_bind(self):
-        # Set socket options before binding
+    daemon_threads = True
+
+    def server_bind(self) -> None:
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
         super().server_bind()
 
-def webserver():
-    socketserver.TCPServer.allow_reuse_address = True
-    with ThreadedServer(("", PORT), APIServerHandler) as httpd:
-        print(f"[INFO] Serving {os.getcwd()} on port {PORT}")
-        try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:
-            httpd.shutdown()
 
-def main():
+def start_ap(run: Runner = default_run) -> bool:
+    return run(["sudo", PORTAL_SCRIPT, "start"], check=False).returncode == 0
+
+
+def stop_ap(run: Runner = default_run) -> None:
+    run(["sudo", PORTAL_SCRIPT, "stop"], check=False)
+
+
+def serve(directory: str, timeout: float,
+          server_factory: Callable[[tuple[str, int], type[APIServerHandler]], Any] = ThreadedServer) -> None:
+    """Serve the portal on the AP address until timeout/SIGTERM."""
+    os.chdir(directory)
+    httpd = server_factory((BIND_ADDRESS, PORT), APIServerHandler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    print("[PORTAL] serving %s on %s:%d" % (directory, BIND_ADDRESS, PORT))
+    shutdown_event.wait(timeout)
+    httpd.shutdown()
+
+
+def main(argv: Sequence[str] | None = None, run: Runner = default_run,
+         serve_fn: Callable[[str, float], None] = serve) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dir", default="/home/pi/openeo/portal/html", help="Directory to serve")
+    parser.add_argument("--dir", default=os.path.join(HERE, "html"), help="Directory to serve")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    os.chdir(args.dir)
-    print(f"Serving directory: {args.dir}")
-    on_startup()
+    start, reason = decide_start(saved_wifi_client_profiles(run), read_force_portal(),
+                                 read_stored_psk(run) is not None)
+    if not start:
+        print("[PORTAL] not starting: %s" % reason)
+        return 0
+    print("[PORTAL] starting: %s" % reason)
 
-    serverthread = threading.Thread(target=webserver, name='serverthread', daemon=True)
-    serverthread.start()
-
-    time.sleep(args.timeout)
-    on_shutdown()
-    sys.exit(0)
+    if not start_ap(run):
+        print("[PORTAL] access point failed to start; giving up")
+        stop_ap(run)
+        return 1
+    try:
+        signal.signal(signal.SIGTERM, lambda *_: shutdown_event.set())
+        serve_fn(args.dir, args.timeout)
+    except Exception as e:
+        print("[PORTAL] error: %s" % e)
+    finally:
+        stop_ap(run)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

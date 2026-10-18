@@ -137,7 +137,7 @@ defaultConfig = {
         "loadmanagement" : { "enabled" : True },
         "os_metrics" : { "enabled" : True },
         "homeassistant" : { "enabled" : False },
-        "cloud" : {"enabled": True},
+        "cloud" : {"enabled": False},
         }
 
 configDB = openeoConfigClass(defaultConfig)

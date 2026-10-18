@@ -1,0 +1,12 @@
+[Unit]
+Description=OpenEO first-boot setup (apply openeo-setup.txt)
+After=local-fs.target
+Before=openeo.service openeo_portal.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /home/pi/openeo/portal/setupfile.py
+
+[Install]
+WantedBy=multi-user.target

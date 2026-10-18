@@ -1,10 +1,18 @@
 [Unit]
-Description=openeo startup
-After=multi-user.target
+Description=OpenEO Wi-Fi setup portal (self-gating: exits unless setup is needed)
+After=network.target NetworkManager.service openeo_firstboot.service
+Wants=openeo_firstboot.service
 
 [Service]
-ExecStart=/home/pi/openeo/portal/portal.py
-Type=oneshot
+Type=simple
+User=pi
+# Port 81 is privileged. Grant only the bind capability to this service, so the
+# portal does not depend on openeo.py having setcap'd python3 first (it hasn't
+# on the very first boot, which is exactly when the portal is needed).
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+WorkingDirectory=/home/pi/openeo/portal
+ExecStart=/usr/bin/python3 /home/pi/openeo/portal/portal.py
+TimeoutStopSec=60
 
 [Install]
 WantedBy=multi-user.target

@@ -3,7 +3,7 @@
 GitHub Release/Branch Downloader for OpenEO
 
 This script allows the `pi` user to:
-  - List available releases and branches from the minceheid/openeo repo
+  - List available releases and branches from the Peterg101/openeo repo
   - Download and extract a selected release/branch
   - Write the release/branch name to release.txt in the extracted directory
   - Run the included deployment script (openeo_deploy.bash)
@@ -27,7 +27,8 @@ from urllib.request import urlopen, Request
 from pwd import getpwnam
 from grp import getgrnam
 
-GITHUB_REPO = "minceheid/openeo"
+# Single source of truth for where releases/updates come from (lib/checkversion.py imports it).
+GITHUB_REPO = "Peterg101/openeo"
 RELEASEDIR = "/home/pi/releases"
 GH_TOKEN = os.environ.get("GH_TOKEN", "")
 

@@ -5,7 +5,7 @@ import ClockFace from "./Carousel/openeo-ClockFace";
 import SolarTimer from "./Carousel/openeo-SolarTimer";
 import EVChargerStatus from "./Carousel/openeo-Status";
 import { useToastContext } from "./openeo-Toast";
-import { buildUrl } from './utils/funcs';
+import { buildUrl, apiFetch, postJson } from "./utils/funcs";
 import { uiCss,globalCss,styles } from './utils/styles';
 
 
@@ -52,7 +52,7 @@ export default function ScheduleCarousel() {
 
     const fetchStatus = async () => {
       try {
-        const res = await fetch(buildUrl("getstatus")); // your URL
+        const res = await apiFetch(buildUrl("getstatus")); // your URL
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
 
@@ -134,7 +134,7 @@ export default function ScheduleCarousel() {
     let cancelled = false;
     const fetchConfig = async () => {
       try {
-        const res = await fetch(buildUrl("getconfig")); // your URL
+        const res = await apiFetch(buildUrl("getconfig")); // your URL
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
 
@@ -242,11 +242,7 @@ function debounce(func, delay) {
     console.log(obj);
   try {
 
-    const res = await fetch(buildUrl("setsettings"), {
-      method: "POST",
-		  headers: {'Content-Type': 'application/json'},
-      body: new URLSearchParams(obj),
-    });
+    const res = await postJson(buildUrl("setsettings"), obj);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     addToast({ type: "success", title: "Success", message: "Schedule Saved" });
